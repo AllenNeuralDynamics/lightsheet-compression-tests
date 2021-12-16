@@ -7,6 +7,7 @@ import sys
 import pandas as pd
 import itertools
 import numpy as np
+import logging
 
 from timeit import default_timer as timer
 
@@ -38,10 +39,19 @@ def main():
     parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain/data.h5")
     parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/david.feng/test_file.zarr")
     parser.add_argument("-o","--output-metrics-file", type=str, default="./compression_metrics.csv")
+    parser.add_argument("-l","--log-level", type=str, default=logging.INFO)
 
     args = parser.parse_args(sys.argv[1:])
 
-    run(**vars(args))
+    logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
+    logging.getLogger().setLevel(args.log_level)
+
+    run(num_tiles=args.num_tiles, 
+        resolution=args.resolution, 
+        random_seed=args.random_seed, 
+        input_file=args.input_file, 
+        output_data_file=args.output_data_file, 
+        output_metrics_file=args.output_metrics_file)
 
 def run(num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
 
@@ -60,6 +70,8 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
 
     with h5py.File(input_file) as f:
         ds = f["t00000"]
+        
+        total_tests = num_tiles * len(compressors)
 
         for ti in range(num_tiles):
             rslice = random.choice(list(ds.keys()))
@@ -75,10 +87,10 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
                     'quant': c['quant'],
                     'tile': rslice
                 }
-
-                print(f"compressor: {c['name']} level={c['level']} shuffle={c['shuffle']} quant={c['quant']}")
-
-                print(f"loading {rslice}")
+                
+                logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
+                logging.info(f"compressor: {c['name']} level={c['level']} shuffle={c['shuffle']} quant={c['quant']}")
+                logging.info(f"loading {rslice}")
 
                 start = timer()
                 data = ds[rslice][resolution]["cells"][()]
@@ -88,19 +100,18 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
                 tile_metrics['nbytes'] = data.nbytes
                 tile_metrics['shape'] = data.shape
                 tile_metrics['read_bps'] = data.nbytes / read_dur
-                print(f"loaded {data.shape} {data.nbytes} bytes, time {read_dur}s")
+                logging.info(f"loaded {data.shape} {data.nbytes} bytes, time {read_dur}s")
 
 
                 start = timer()
                 za = zarr.array(data, chunks=True, filters=filters, compressor=compressor)
-                print(za.info)
                 end = timer()
                 compress_dur = end - start
                 tile_metrics['compress_time'] = compress_dur
                 tile_metrics['nbytes_written'] = za.nbytes_stored
                 tile_metrics['compress_bps'] = data.nbytes / compress_dur
                 tile_metrics['storage_ratio'] = data.nbytes / za.nbytes_stored
-                print(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}")
+                logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}")
 
                 start = timer()
                 zarr.save(output_data_file, za)
@@ -108,7 +119,7 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
                 write_dur = end - start
                 tile_metrics['write_time'] = write_dur
                 tile_metrics['write_bps'] = za.nbytes_stored / write_dur
-                print(f"write time = {write_dur}s")
+                logging.info(f"write time = {write_dur}s")
 
                 total_read_time += read_dur
                 total_compress_time += compress_dur
@@ -119,7 +130,6 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
 
                 all_metrics.append(tile_metrics)
 
-                break
 
         df = pd.DataFrame.from_records(all_metrics)
         df.to_csv(output_metrics_file, index_label='test_number')
@@ -131,6 +141,7 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
         
     
 
-if __name__ == "__main__": main()
+if __name__ == "__main__": 
+    main()
 
 
