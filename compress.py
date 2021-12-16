@@ -6,6 +6,7 @@ import argparse
 import sys
 import pandas as pd
 import itertools
+import numpy as np
 
 from timeit import default_timer as timer
 
@@ -13,12 +14,21 @@ def compressor_lib():
     cnames = [ 'zstd', 'blosclz', 'lz4', 'lz4hc', 'zlib' ]#, 'snappy' ]
     shuffles = [ numcodecs.Blosc.SHUFFLE, numcodecs.Blosc.NOSHUFFLE ]
     clevels = [ 0,1,2,5,9 ]
-    opts = itertools.product(cnames, clevels, shuffles)
+    qs = [ 0, 2, 4 ]
 
-    return {
-        f'blosc cname={cname} clevel={clevel} shuffle={shuffle}':numcodecs.Blosc(cname=cname, clevel=clevel, shuffle=shuffle) for cname, clevel, shuffle in opts
-    }
+    opts = []
+    for cname, clevel, shuffle, q in itertools.product(cnames, clevels, shuffles, qs):
+        opts.append({
+            'name': f'blosc-{cname}',
+            'level': clevel,
+            'shuffle': shuffle,
+            'quant':q,
+            'compressor': numcodecs.Blosc(cname=cname, clevel=clevel, shuffle=shuffle),
+            'filters': None if q == 0 else [ numcodecs.fixedscaleoffset.FixedScaleOffset(offset=0, scale=1/10**q, dtype=np.uint16) ]
+        })
 
+    return opts
+        
 
 def main():
     parser = argparse.ArgumentParser()
@@ -26,7 +36,7 @@ def main():
     parser.add_argument("-r","--resolution", type=str, default="1")
     parser.add_argument("-s","--random-seed", type=int, default=None)
     parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain/data.h5")
-    parser.add_argument("-d","--output-data-file", type=str, default="./test_file.zarr")
+    parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/david.feng/test_file.zarr")
     parser.add_argument("-o","--output-metrics-file", type=str, default="./compression_metrics.csv")
 
     args = parser.parse_args(sys.argv[1:])
@@ -54,14 +64,19 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
         for ti in range(num_tiles):
             rslice = random.choice(list(ds.keys()))
             
-            for cname, compressor in compressors.items():
+            for c in compressors:
+                compressor = c['compressor']
+                filters = c['filters']
 
                 tile_metrics = {
-                    'compressor': cname,
+                    'compressor': c['name'],
+                    'level': c['level'],
+                    'shuffle': c['shuffle'],
+                    'quant': c['quant'],
                     'tile': rslice
                 }
 
-                print(f"compressor: {cname}")
+                print(f"compressor: {c['name']} level={c['level']} shuffle={c['shuffle']} quant={c['quant']}")
 
                 print(f"loading {rslice}")
 
@@ -77,7 +92,8 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
 
 
                 start = timer()
-                za = zarr.array(data, chunks=True, compressor=compressor)
+                za = zarr.array(data, chunks=True, filters=filters, compressor=compressor)
+                print(za.info)
                 end = timer()
                 compress_dur = end - start
                 tile_metrics['compress_time'] = compress_dur
@@ -103,8 +119,10 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
 
                 all_metrics.append(tile_metrics)
 
+                break
+
         df = pd.DataFrame.from_records(all_metrics)
-        df.to_csv(output_metrics_file)
+        df.to_csv(output_metrics_file, index_label='test_number')
             
         print(f"compress bps {total_bytes_read / total_compress_time}")
         print(f"compression ratio = {total_bytes_read/total_bytes_stored}")
