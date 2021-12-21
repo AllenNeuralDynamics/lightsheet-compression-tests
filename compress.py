@@ -53,7 +53,7 @@ def main():
         output_data_file=args.output_data_file, 
         output_metrics_file=args.output_metrics_file)
 
-def read_compress_write(dataset, key, compressor, filters, store):
+def read_compress_write(dataset, key, compressor, filters, output_path):
     logging.info(f"loading {key}")
     
     start = timer()
@@ -63,18 +63,29 @@ def read_compress_write(dataset, key, compressor, filters, store):
     logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
 
     start = timer()
-    za = zarr.array(data, chunks=True, filters=filters, compressor=compressor, store=store, overwrite=True)
+    ds = zarr.DirectoryStore(output_path)
+    za = zarr.array(data, chunks=True, filters=filters, compressor=compressor, store=ds, overwrite=True)
     end = timer()
     compress_dur = end - start
     logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}")
 
-    return {
+
+    #start = timer()
+    #zarr.copy_store(za.store, zarr.DirectoryStore(output_path), if_exists='replace')
+    #end = timer()
+    #write_dur = end - start
+    #logging.info(f"write time = {write_dur}, bps = {za.nbytes_stored/write_dur}")
+
+    out = {
         'read_time': read_dur,
         'bytes_read': za.nbytes,
         'compress_time': compress_dur,
         'bytes_written': za.nbytes_stored,
-        'shape': data.shape
+        'shape': data.shape,
+        #'write_time': write_dur
     }
+
+    return out 
 
 
 def run(num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
@@ -87,7 +98,7 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
 
     compressors = compressor_lib()
 
-    with h5py.File(input_file) as f:
+    with h5py.File(input_file, 'r') as f:
         ds = f["t00000"]
         
         total_tests = num_tiles * len(compressors)
@@ -111,8 +122,7 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
                 logging.info(f"compressor: {c['name']} level={c['level']} shuffle={c['shuffle']} quant={c['quant']}")
 
                 key = f"{rslice}/{resolution}/cells"
-                store = zarr.storage.DirectoryStore(output_data_file)
-                data = read_compress_write(ds, key, compressor, filters, store)
+                data = read_compress_write(ds, key, compressor, filters, output_data_file)
 
                 tile_metrics['read_time'] = data['read_time']
                 tile_metrics['bytes_read'] = data['bytes_read']
@@ -122,6 +132,8 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
                 tile_metrics['bytes_written'] = data['bytes_written']
                 tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
                 tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
+                #tile_metrics['write_time'] = data['write_time']
+                #tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
 
                 all_metrics.append(tile_metrics)
 
