@@ -1,0 +1,5 @@
+zfpy
+zarr
+pandas
+numpy
+h5py

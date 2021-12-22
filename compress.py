@@ -11,26 +11,139 @@ import logging
 
 from timeit import default_timer as timer
 
-def compressor_lib():    
+def trunc_filter(bits):
+    scale = 1.0 / (2 ** bits)
+    return [] if bits == 0 else [ numcodecs.fixedscaleoffset.FixedScaleOffset(offset=0, scale=scale, dtype=np.uint16) ]
+
+def blosc_compressor_lib(trunc_bits):
     cnames = [ 'zstd', 'blosclz', 'lz4', 'lz4hc', 'zlib' ]#, 'snappy' ]
     shuffles = [ numcodecs.Blosc.SHUFFLE, numcodecs.Blosc.NOSHUFFLE ]
-    clevels = [ 0,1,2,5,9 ]
-    qs = [ 0, 2, 4 ]
+    clevels = [ 1, 3, 5, 9 ]
 
     opts = []
-    for cname, clevel, shuffle, q in itertools.product(cnames, clevels, shuffles, qs):
+    for cname, clevel, shuffle, tb in itertools.product(cnames, clevels, shuffles, trunc_bits):
         opts.append({
             'name': f'blosc-{cname}',
-            'level': clevel,
-            'shuffle': shuffle,
-            'quant':q,
             'compressor': numcodecs.Blosc(cname=cname, clevel=clevel, shuffle=shuffle),
-            'filters': None if q == 0 else [ numcodecs.fixedscaleoffset.FixedScaleOffset(offset=0, scale=1/10**q, dtype=np.uint16) ]
+            'filters': trunc_filter(tb),            
+            'params': {
+                'shuffle': shuffle,
+                'level': clevel,
+                'trunc': tb,
+            }
         })
 
     return opts
-        
 
+def lossless_compressor_lib(trunc_bits):
+    clevels = [ 1, 3, 5, 9 ]
+
+    opts = []
+    for clevel,tb in itertools.product(clevels, trunc_bits):
+        opts.append({
+            'name': 'zlib',
+            'compressor': numcodecs.zlib.Zlib(level=clevel),
+            'filters': trunc_filter(tb),
+            'params': {
+                'level': clevel,
+                'trunc': tb
+            }
+        })
+
+        opts.append({
+            'name': 'gzip',
+            'compressor': numcodecs.gzip.GZip(level=clevel),
+            'filters': trunc_filter(tb),
+            'params': {
+                'level': clevel,
+                'trunc': tb
+            }
+        })
+
+        opts.append({
+            'name': 'bz2',
+            'compressor': numcodecs.bz2.BZ2(level=clevel),
+            'filters': trunc_filter(tb),
+            'params': {
+                'level': clevel,
+                'trunc': tb
+            }
+        })
+
+        opts.append({
+            'name': 'lzma',
+            'compressor': numcodecs.lzma.LZMA(preset=clevel),
+            'filters': trunc_filter(tb),
+            'params': {
+                'level': clevel,
+                'trunc': tb
+            }
+        })
+
+    return opts
+
+def lossy_compressor_lib(trunc_bits):
+    import zfpy
+    tols = [ 0, 2**4, 2**8, 2**16  ]
+    rates = [ 1.0, 0.8, 0.5 ] # maxbits / 4^d
+    precisions = [ 16, 14, 12 ] # number of bit planes encoded for transform coefficients
+
+    cast_filter = [ numcodecs.astype.AsType(encode_dtype=np.float32, decode_dtype=np.uint16) ]
+
+    compressors = []
+
+    compressors += [{ 
+        'name': 'zfpy-fixed-accuracy',
+        'compressor': numcodecs.zfpy.ZFPY(mode=zfpy.mode_fixed_accuracy, tolerance=t), 
+        'filters': trunc_filter(tb)+cast_filter,        
+        'params': {
+            'tolerance': t,
+            'rate': None,
+            'precision': None,
+            'trunc': tb,
+            'level': 0            
+        }
+    } for t,tb in itertools.product(tols,trunc_bits)]
+
+    compressors += [{
+        'name': 'zfpy-fixed-rate',
+        'compressor': numcodecs.zfpy.ZFPY(mode=zfpy.mode_fixed_rate, rate=r),
+        'filters': trunc_filter(tb)+cast_filter,        
+        'params': {
+            'tolerance': None,
+            'rate': r,
+            'precision': None,
+            'trunc': tb,
+            'level': 0,
+        }
+    } for r,tb in itertools.product(rates, trunc_bits)]
+
+    compressors += [{
+        'name': 'zfpy-fixed-precision',
+        'compressor': numcodecs.zfpy.ZFPY(mode=zfpy.mode_fixed_precision, precision=p),
+        'filters': trunc_filter(tb)+cast_filter,        
+        'params': {
+            'tolerance': None,
+            'rate': None,
+            'precision': p,
+            'trunc': tb,
+            'level': 0,
+        }
+    } for p,tb in itertools.product(precisions, trunc_bits)]
+
+    return compressors
+
+def build_compressors(codecs, trunc_bits):
+    compressors = []
+    if 'other-lossless' in codecs:
+        compressors += lossless_compressor_lib(trunc_bits)
+    if 'blosc' in codecs:
+        compressors += blosc_compressor_lib(trunc_bits)
+    if 'lossy' in codecs:
+        compressors += lossy_compressor_lib(trunc_bits)
+
+    return compressors
+    
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-n","--num-tiles", type=int, default=1)
@@ -40,13 +153,20 @@ def main():
     parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/david.feng/test_file.zarr")
     parser.add_argument("-o","--output-metrics-file", type=str, default="./compression_metrics.csv")
     parser.add_argument("-l","--log-level", type=str, default=logging.INFO)
+    parser.add_argument("-c","--codecs", nargs="+", type=str, default=["blosc"])
+    parser.add_argument("-t","--trunc-bits", nargs="+", type=int, default=[0,2,4])
 
     args = parser.parse_args(sys.argv[1:])
 
+    print(args)
+
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
     logging.getLogger().setLevel(args.log_level)
+    
+    compressors = build_compressors(args.codecs, args.trunc_bits)
 
-    run(num_tiles=args.num_tiles, 
+    run(compressors=compressors,
+        num_tiles=args.num_tiles, 
         resolution=args.resolution, 
         random_seed=args.random_seed, 
         input_file=args.input_file, 
@@ -65,6 +185,7 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
     start = timer()
     ds = zarr.DirectoryStore(output_path)
     za = zarr.array(data, chunks=True, filters=filters, compressor=compressor, store=ds, overwrite=True)
+    logging.info(str(za.info))
     end = timer()
     compress_dur = end - start
     logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}")
@@ -88,15 +209,12 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
     return out 
 
 
-def run(num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
 
     if random_seed is not None:
         random.seed(random_seed)
 
-
     all_metrics = []
-
-    compressors = compressor_lib()
 
     with h5py.File(input_file, 'r') as f:
         ds = f["t00000"]
@@ -111,15 +229,14 @@ def run(num_tiles, resolution, random_seed, input_file, output_data_file, output
                 filters = c['filters']
 
                 tile_metrics = {
-                    'compressor': c['name'],
-                    'level': c['level'],
-                    'shuffle': c['shuffle'],
-                    'quant': c['quant'],
+                    'compressor_name': c['name'],
                     'tile': rslice
                 }
+
+                tile_metrics.update(c['params'])
                 
                 logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
-                logging.info(f"compressor: {c['name']} level={c['level']} shuffle={c['shuffle']} quant={c['quant']}")
+                logging.info(f"compressor: {c['name']} params: {c['params']}")
 
                 key = f"{rslice}/{resolution}/cells"
                 data = read_compress_write(ds, key, compressor, filters, output_data_file)
