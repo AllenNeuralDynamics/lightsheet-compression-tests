@@ -8,6 +8,7 @@ import pandas as pd
 import itertools
 import numpy as np
 import logging
+import psutil
 
 from timeit import default_timer as timer
 
@@ -182,13 +183,15 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
     read_dur = end - start
     logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
 
+    psutil.cpu_percent(interval=None)
     start = timer()
     ds = zarr.DirectoryStore(output_path)
     za = zarr.array(data, chunks=True, filters=filters, compressor=compressor, store=ds, overwrite=True)
     logging.info(str(za.info))
+    cpu_utilization = psutil.cpu_percent(interval=None)
     end = timer()
     compress_dur = end - start
-    logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}")
+    logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}, cpu = {cpu_utilization}%")
 
 
     #start = timer()
@@ -203,6 +206,7 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
         'compress_time': compress_dur,
         'bytes_written': za.nbytes_stored,
         'shape': data.shape,
+        'cpu_utilization': cpu_utilization
         #'write_time': write_dur
     }
 
@@ -249,6 +253,7 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
                 tile_metrics['bytes_written'] = data['bytes_written']
                 tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
                 tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
+                tile_metrics['cpu_utilization'] = data['cpu_utilization']
                 #tile_metrics['write_time'] = data['write_time']
                 #tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
 
