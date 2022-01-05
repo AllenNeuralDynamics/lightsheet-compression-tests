@@ -1,0 +1,7 @@
+PyImarisWriter (Windows binaries included in repo)
+If compiling:
+hdf5 version >= 1.10.4: https://www.hdfgroup.org/downloads/hdf5/ (compile with default options, only base C module is required)
+zlib: https://www.zlib.net/ (compile with default options)
+lz4: https://github.com/lz4/lz4 (compile with default options)
+
+numpy
