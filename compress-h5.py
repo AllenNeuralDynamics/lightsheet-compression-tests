@@ -18,35 +18,34 @@ class MyCallbackClass(PW.CallbackClass):
 
 class TestConfiguration:
 
-    def __init__(self, id, title, np_type, imaris_type, compression, threads, color_table):
+    def __init__(self, id, title, np_type, imaris_type, compression, color_table):
 
         self.mId = id
         self.mTitle = title
         self.mNp_type = np_type
         self.mImaris_type = imaris_type
         self.mCompression = compression
-        self.mThreads = threads
         self.mColor_table = color_table
 
 def get_test_configurations():
     
     configurations = []
     
-    configurations.append(TestConfiguration(len(configurations), 'compression_gzip_level1', np.uint16, 'uint16', PW.eCompressionAlgorithmGzipLevel1, 4,
+    configurations.append(TestConfiguration(len(configurations), 'compression_gzip_level1', np.uint16, 'uint16', PW.eCompressionAlgorithmGzipLevel1,
                                             [PW.Color(0, 1, 1, 1), PW.Color(1, 0, 1, 1), PW.Color(1, 1, 0, 1)]))
     
-    configurations.append(TestConfiguration(len(configurations), 'compression_lz4', np.uint16, 'uint16', PW.eCompressionAlgorithmLZ4, 4,
+    configurations.append(TestConfiguration(len(configurations), 'compression_lz4', np.uint16, 'uint16', PW.eCompressionAlgorithmLZ4,
                                             [PW.Color(0, 1, 1, 1), PW.Color(1, 0, 1, 1), PW.Color(1, 1, 0, 1)]))
 
-    configurations.append(TestConfiguration(len(configurations), 'compression_shuffle_lz4', np.uint16, 'uint16', PW.eCompressionAlgorithmShuffleLZ4, 4,
+    configurations.append(TestConfiguration(len(configurations), 'compression_shuffle_lz4', np.uint16, 'uint16', PW.eCompressionAlgorithmShuffleLZ4,
                                             [PW.Color(0, 1, 1, 1), PW.Color(1, 0, 1, 1), PW.Color(1, 1, 0, 1)]))
 
-    configurations.append(TestConfiguration(len(configurations), 'compression_none', np.uint16, 'uint16', PW.eCompressionAlgorithmNone, 4,
+    configurations.append(TestConfiguration(len(configurations), 'compression_none', np.uint16, 'uint16', PW.eCompressionAlgorithmNone,
                                             [PW.Color(0, 1, 1, 1), PW.Color(1, 0, 1, 1), PW.Color(1, 1, 0, 1)]))
 
     return configurations
 
-def run(configuration, np_data):
+def run(configuration, np_data, cores):
 
     image_size = PW.ImageSize(x = np_data.shape[0], y = np_data.shape[1], z = np_data.shape[2], c = 1, t = 1)
     dimension_sequence = PW.DimensionSequence('x', 'y', 'z', 'c', 't')
@@ -57,7 +56,7 @@ def run(configuration, np_data):
     output_filename = f'data_{configuration.mTitle}.h5'
 
     options = PW.Options()
-    options.mNumberOfThreads = configuration.mThreads
+    options.mNumberOfThreads = cores
     options.mCompressionAlgorithmType = configuration.mCompression
     options.mEnableLogProgress = True
 
@@ -89,7 +88,6 @@ def run(configuration, np_data):
     adjust_color_range = True
     image_extents = PW.ImageExtents(0, 0, 0, image_size.x, image_size.y, image_size.z)
     parameters = PW.Parameters()
-    parameters.set_value('Image', 'ImageSizeInMB', 2400)
     parameters.set_channel_name(0, configuration.mTitle)
     time_infos = [datetime.today()]
     color_infos = [PW.ColorInfo() for _ in range(image_size.c)]
@@ -104,15 +102,16 @@ def main():
 
     camX = 2048
     camY = 2048
-    nFrames = 100
+    nFrames = 1000
+    nCores = 4
 
-    np_data = np.random.normal(size = (camX, camY, nFrames))
+    np_data = np.random.poisson(size = (camX, camY, nFrames))
     np_data = np_data/np.max(np_data[:])*1000
 
     configurations = get_test_configurations()
 
     for test_config in configurations:
-        run(test_config, np_data.astype(test_config.mNp_type))
+        run(test_config, np_data.astype(test_config.mNp_type), nCores)
 
 if __name__ == "__main__":
 
