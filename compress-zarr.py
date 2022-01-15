@@ -3,12 +3,14 @@ import random
 import zarr
 import numcodecs
 import argparse
+import os
 import sys
 import pandas as pd
 import itertools
 import numpy as np
 import logging
 import psutil
+import tifffile
 
 from timeit import default_timer as timer
 
@@ -166,13 +168,27 @@ def main():
     
     compressors = build_compressors(args.codecs, args.trunc_bits)
 
-    run(compressors=compressors,
-        num_tiles=args.num_tiles, 
-        resolution=args.resolution, 
-        random_seed=args.random_seed, 
-        input_file=args.input_file, 
-        output_data_file=args.output_data_file, 
-        output_metrics_file=args.output_metrics_file)
+    _, file_extension = os.path.splitext(args.input_file)
+
+    if file_extension == ".h5" or file_extension == ".zarr":
+        run(compressors=compressors,
+            num_tiles=args.num_tiles,
+            resolution=args.resolution,
+            random_seed=args.random_seed,
+            input_file=args.input_file,
+            output_data_file=args.output_data_file,
+            output_metrics_file=args.output_metrics_file,
+            file_format=file_extension)
+    elif file_extension == '.tif':
+        # Assume full resolution for now
+        run_tiff(compressors=compressors,
+                 num_tiles=args.num_tiles,
+                 random_seed=args.random_seed,
+                 input_file=args.input_file,
+                 output_data_file=args.output_data_file,
+                 output_metrics_file=args.output_metrics_file)
+    else:
+        raise ValueError("Unrecognized input file extension: " + file_extension)
 
 def read_compress_write(dataset, key, compressor, filters, output_path):
     logging.info(f"loading {key}")
@@ -183,6 +199,25 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
     read_dur = end - start
     logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
 
+    out = compress_write(data, compressor, filters, output_path)
+    out['read_time'] = read_dur
+    return out
+
+def read_compress_write_tiff(tiff_path, key, compressor, filters, output_path):
+    logging.info(f"loading slice {key}")
+
+    start = timer()
+    # FIXME: Do we only want to compress one slice at a time?
+    data = tifffile.imread(tiff_path, key=key)
+    end = timer()
+    read_dur = end - start
+    logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
+
+    out = compress_write(data, compressor, filters, output_path)
+    out['read_time'] = read_dur
+    return out
+
+def compress_write(data, compressor, filters, output_path):
     psutil.cpu_percent(interval=None)
     start = timer()
     ds = zarr.DirectoryStore(output_path)
@@ -201,7 +236,6 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
     #logging.info(f"write time = {write_dur}, bps = {za.nbytes_stored/write_dur}")
 
     out = {
-        'read_time': read_dur,
         'bytes_read': za.nbytes,
         'compress_time': compress_dur,
         'bytes_written': za.nbytes_stored,
@@ -210,57 +244,118 @@ def read_compress_write(dataset, key, compressor, filters, output_path):
         #'write_time': write_dur
     }
 
-    return out 
+    return out
 
 
-def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file, file_format):
 
     if random_seed is not None:
         random.seed(random_seed)
 
     all_metrics = []
 
-    with h5py.File(input_file, 'r') as f:
-        ds = f["t00000"]
-        
-        total_tests = num_tiles * len(compressors)
+    if file_format == '.h5':
+        f = h5py.File(input_file, 'r')
+    elif file_format == '.zarr':
+        f = zarr.open(input_file, 'r')
+    else:
+        raise ValueError("Unsupported input file format: " + file_format)
 
-        for ti in range(num_tiles):
-            rslice = random.choice(list(ds.keys()))
-            
-            for c in compressors:
-                compressor = c['compressor']
-                filters = c['filters']
+    ds = f["t00000"]
 
-                tile_metrics = {
-                    'compressor_name': c['name'],
-                    'tile': rslice
-                }
+    total_tests = num_tiles * len(compressors)
 
-                tile_metrics.update(c['params'])
-                
-                logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
-                logging.info(f"compressor: {c['name']} params: {c['params']}")
+    for ti in range(num_tiles):
+        rslice = random.choice(list(ds.keys()))
 
-                key = f"{rslice}/{resolution}/cells"
-                data = read_compress_write(ds, key, compressor, filters, output_data_file)
+        for c in compressors:
+            compressor = c['compressor']
+            filters = c['filters']
 
-                tile_metrics['read_time'] = data['read_time']
-                tile_metrics['bytes_read'] = data['bytes_read']
-                tile_metrics['shape'] = data['shape']
-                tile_metrics['read_bps'] = data['bytes_read'] / data['read_time']
-                tile_metrics['compress_time'] = data['compress_time']
-                tile_metrics['bytes_written'] = data['bytes_written']
-                tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
-                tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
-                tile_metrics['cpu_utilization'] = data['cpu_utilization']
-                #tile_metrics['write_time'] = data['write_time']
-                #tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
+            tile_metrics = {
+                'compressor_name': c['name'],
+                'tile': rslice
+            }
 
-                all_metrics.append(tile_metrics)
+            tile_metrics.update(c['params'])
 
-        df = pd.DataFrame.from_records(all_metrics)
-        df.to_csv(output_metrics_file, index_label='test_number')
+            logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
+            logging.info(f"compressor: {c['name']} params: {c['params']}")
+
+            key = f"{rslice}/{resolution}/cells"
+            data = read_compress_write(ds, key, compressor, filters, output_data_file)
+
+            tile_metrics['read_time'] = data['read_time']
+            tile_metrics['bytes_read'] = data['bytes_read']
+            tile_metrics['shape'] = data['shape']
+            tile_metrics['read_bps'] = data['bytes_read'] / data['read_time']
+            tile_metrics['compress_time'] = data['compress_time']
+            tile_metrics['bytes_written'] = data['bytes_written']
+            tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
+            tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
+            tile_metrics['cpu_utilization'] = data['cpu_utilization']
+            #tile_metrics['write_time'] = data['write_time']
+            #tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
+
+            all_metrics.append(tile_metrics)
+
+    df = pd.DataFrame.from_records(all_metrics)
+    output_metrics_file = output_metrics_file.replace('.csv', "_" + file_format.replace('.', '') + ".csv")
+    df.to_csv(output_metrics_file, index_label='test_number')
+
+    if file_format == '.h5':
+        # zarr datasets need not be closed?
+        f.close()
+
+def run_tiff(compressors, num_tiles, random_seed, input_file, output_data_file, output_metrics_file):
+    if random_seed is not None:
+        random.seed(random_seed)
+
+    all_metrics = []
+
+    total_tests = num_tiles * len(compressors)
+
+    # Just read metadata, don't load image into memory
+    tiff = tifffile.TiffFile(input_file)
+    num_slices = len(tiff.pages)
+    tifffile.TiffFile.close(tiff)  # FIXME: is this correct?
+
+    for ti in range(num_tiles):
+        rslice = random.randrange(num_slices)
+
+        for c in compressors:
+            compressor = c['compressor']
+            filters = c['filters']
+
+            tile_metrics = {
+                'compressor_name': c['name'],
+                'tile': rslice
+            }
+
+            tile_metrics.update(c['params'])
+
+            logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
+            logging.info(f"compressor: {c['name']} params: {c['params']}")
+
+            data = read_compress_write_tiff(input_file, rslice, compressor, filters, output_data_file)
+
+            tile_metrics['read_time'] = data['read_time']
+            tile_metrics['bytes_read'] = data['bytes_read']
+            tile_metrics['shape'] = data['shape']
+            tile_metrics['read_bps'] = data['bytes_read'] / data['read_time']
+            tile_metrics['compress_time'] = data['compress_time']
+            tile_metrics['bytes_written'] = data['bytes_written']
+            tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
+            tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
+            tile_metrics['cpu_utilization'] = data['cpu_utilization']
+            # tile_metrics['write_time'] = data['write_time']
+            # tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
+
+            all_metrics.append(tile_metrics)
+
+    df = pd.DataFrame.from_records(all_metrics)
+    output_metrics_file = output_metrics_file.replace('.csv', "_tiff.csv")
+    df.to_csv(output_metrics_file, index_label='test_number')
 
 if __name__ == "__main__": 
     main()
