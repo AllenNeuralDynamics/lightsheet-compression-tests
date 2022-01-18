@@ -168,43 +168,16 @@ def main():
     
     compressors = build_compressors(args.codecs, args.trunc_bits)
 
-    _, file_extension = os.path.splitext(args.input_file)
+    run(compressors=compressors,
+        num_tiles=args.num_tiles,
+        resolution=args.resolution,
+        random_seed=args.random_seed,
+        input_file=args.input_file,
+        output_data_file=args.output_data_file,
+        output_metrics_file=args.output_metrics_file)
 
-    if file_extension == ".h5" or file_extension == ".zarr":
-        run(compressors=compressors,
-            num_tiles=args.num_tiles,
-            resolution=args.resolution,
-            random_seed=args.random_seed,
-            input_file=args.input_file,
-            output_data_file=args.output_data_file,
-            output_metrics_file=args.output_metrics_file,
-            file_format=file_extension)
-    elif file_extension == '.tif':
-        # Assume full resolution for now
-        run_tiff(compressors=compressors,
-                 num_tiles=args.num_tiles,
-                 random_seed=args.random_seed,
-                 input_file=args.input_file,
-                 output_data_file=args.output_data_file,
-                 output_metrics_file=args.output_metrics_file)
-    else:
-        raise ValueError("Unrecognized input file extension: " + file_extension)
-
-def read_compress_write(dataset, key, compressor, filters, output_path):
+def read_tiff_slice(tiff_path, key):
     logging.info(f"loading {key}")
-    
-    start = timer()
-    data = dataset[key][()]
-    end = timer()
-    read_dur = end - start
-    logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
-
-    out = compress_write(data, compressor, filters, output_path)
-    out['read_time'] = read_dur
-    return out
-
-def read_compress_write_tiff(tiff_path, key, compressor, filters, output_path):
-    logging.info(f"loading slice {key}")
 
     start = timer()
     # FIXME: Do we only want to compress one slice at a time?
@@ -213,9 +186,49 @@ def read_compress_write_tiff(tiff_path, key, compressor, filters, output_path):
     read_dur = end - start
     logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
 
-    out = compress_write(data, compressor, filters, output_path)
-    out['read_time'] = read_dur
-    return out
+    return data, read_dur
+
+def read_dataset_chunk(dataset, key):
+    logging.info(f"loading {key}")
+
+    start = timer()
+    data = dataset[key][()]
+    end = timer()
+    read_dur = end - start
+    logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
+
+    return data, read_dur
+
+def make_random_key(dataset, resolution):
+    rslice = random.choice(list(dataset.keys()))
+    key = f"{rslice}/{resolution}/cells"
+
+    return key, rslice
+
+def read_random_chunk(input_file, resolution):
+    _, file_format = os.path.splitext(input_file)
+
+    if file_format == '.h5':
+        f = h5py.File(input_file, mode='r')
+        ds = f["t00000"]
+        key, rslice = make_random_key(ds, resolution)
+        data, read_dur = read_dataset_chunk(ds, key)
+        f.close()
+    elif file_format == '.zarr':
+        f = zarr.open(input_file, mode='r')
+        ds = f["t00000"]
+        key, rslice = make_random_key(ds, resolution)
+        data, read_dur = read_dataset_chunk(ds, key)
+    elif file_format == ".tif":
+        f = tifffile.TiffFile(input_file)
+        num_slices = len(f.pages)
+        f.close()
+        rslice = random.randrange(num_slices)
+        data, read_dur = read_tiff_slice(input_file, rslice)
+    else:
+        raise ValueError("Unsupported input file format: " + file_format)
+
+    return data, rslice, read_dur
 
 def compress_write(data, compressor, filters, output_path):
     psutil.cpu_percent(interval=None)
@@ -246,27 +259,16 @@ def compress_write(data, compressor, filters, output_path):
 
     return out
 
-
-def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file, file_format):
-
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
     if random_seed is not None:
         random.seed(random_seed)
 
     all_metrics = []
 
-    if file_format == '.h5':
-        f = h5py.File(input_file, 'r')
-    elif file_format == '.zarr':
-        f = zarr.open(input_file, 'r')
-    else:
-        raise ValueError("Unsupported input file format: " + file_format)
-
-    ds = f["t00000"]
-
     total_tests = num_tiles * len(compressors)
 
     for ti in range(num_tiles):
-        rslice = random.choice(list(ds.keys()))
+        data, rslice, read_time = read_random_chunk(input_file, resolution)
 
         for c in compressors:
             compressor = c['compressor']
@@ -282,79 +284,25 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
             logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-            key = f"{rslice}/{resolution}/cells"
-            data = read_compress_write(ds, key, compressor, filters, output_data_file)
+            metrics = compress_write(data, compressor, filters, output_data_file)
 
-            tile_metrics['read_time'] = data['read_time']
-            tile_metrics['bytes_read'] = data['bytes_read']
-            tile_metrics['shape'] = data['shape']
-            tile_metrics['read_bps'] = data['bytes_read'] / data['read_time']
-            tile_metrics['compress_time'] = data['compress_time']
-            tile_metrics['bytes_written'] = data['bytes_written']
-            tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
-            tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
-            tile_metrics['cpu_utilization'] = data['cpu_utilization']
-            #tile_metrics['write_time'] = data['write_time']
-            #tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
-
-            all_metrics.append(tile_metrics)
-
-    df = pd.DataFrame.from_records(all_metrics)
-    output_metrics_file = output_metrics_file.replace('.csv', "_" + file_format.replace('.', '') + ".csv")
-    df.to_csv(output_metrics_file, index_label='test_number')
-
-    if file_format == '.h5':
-        # zarr datasets need not be closed?
-        f.close()
-
-def run_tiff(compressors, num_tiles, random_seed, input_file, output_data_file, output_metrics_file):
-    if random_seed is not None:
-        random.seed(random_seed)
-
-    all_metrics = []
-
-    total_tests = num_tiles * len(compressors)
-
-    # Just read metadata, don't load image into memory
-    tiff = tifffile.TiffFile(input_file)
-    num_slices = len(tiff.pages)
-    tifffile.TiffFile.close(tiff)  # FIXME: is this correct?
-
-    for ti in range(num_tiles):
-        rslice = random.randrange(num_slices)
-
-        for c in compressors:
-            compressor = c['compressor']
-            filters = c['filters']
-
-            tile_metrics = {
-                'compressor_name': c['name'],
-                'tile': rslice
-            }
-
-            tile_metrics.update(c['params'])
-
-            logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
-            logging.info(f"compressor: {c['name']} params: {c['params']}")
-
-            data = read_compress_write_tiff(input_file, rslice, compressor, filters, output_data_file)
-
-            tile_metrics['read_time'] = data['read_time']
-            tile_metrics['bytes_read'] = data['bytes_read']
-            tile_metrics['shape'] = data['shape']
-            tile_metrics['read_bps'] = data['bytes_read'] / data['read_time']
-            tile_metrics['compress_time'] = data['compress_time']
-            tile_metrics['bytes_written'] = data['bytes_written']
-            tile_metrics['compress_bps'] = data['bytes_written'] / data['compress_time']
-            tile_metrics['storage_ratio'] = data['bytes_read'] / data['bytes_written']
-            tile_metrics['cpu_utilization'] = data['cpu_utilization']
+            tile_metrics['read_time'] = read_time
+            tile_metrics['bytes_read'] = metrics['bytes_read']
+            tile_metrics['shape'] = metrics['shape']
+            tile_metrics['read_bps'] = metrics['bytes_read'] / read_time
+            tile_metrics['compress_time'] = metrics['compress_time']
+            tile_metrics['bytes_written'] = metrics['bytes_written']
+            tile_metrics['compress_bps'] = metrics['bytes_written'] / metrics['compress_time']
+            tile_metrics['storage_ratio'] = metrics['bytes_read'] / metrics['bytes_written']
+            tile_metrics['cpu_utilization'] = metrics['cpu_utilization']
             # tile_metrics['write_time'] = data['write_time']
             # tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
 
             all_metrics.append(tile_metrics)
 
+    output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
+
     df = pd.DataFrame.from_records(all_metrics)
-    output_metrics_file = output_metrics_file.replace('.csv', "_tiff.csv")
     df.to_csv(output_metrics_file, index_label='test_number')
 
 if __name__ == "__main__": 
