@@ -3,3 +3,4 @@ zarr
 pandas
 numpy
 h5py
+tifffile
