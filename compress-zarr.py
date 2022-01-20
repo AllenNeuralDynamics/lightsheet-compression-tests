@@ -176,18 +176,6 @@ def main():
         output_data_file=args.output_data_file,
         output_metrics_file=args.output_metrics_file)
 
-def read_tiff_slice(tiff_path, key):
-    logging.info(f"loading {key}")
-
-    start = timer()
-    # FIXME: Do we only want to compress one slice at a time?
-    data = tifffile.imread(tiff_path, key=key)
-    end = timer()
-    read_dur = end - start
-    logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
-
-    return data, read_dur
-
 def read_dataset_chunk(dataset, key):
     logging.info(f"loading {key}")
 
@@ -209,22 +197,28 @@ def read_random_chunk(input_file, resolution):
     _, file_format = os.path.splitext(input_file)
 
     if file_format == '.h5':
-        f = h5py.File(input_file, mode='r')
-        ds = f["t00000"]
-        key, rslice = make_random_key(ds, resolution)
-        data, read_dur = read_dataset_chunk(ds, key)
-        f.close()
+        with h5py.File(input_file, mode='r') as f:
+            ds = f["t00000"]
+            key, rslice = make_random_key(ds, resolution)
+            data, read_dur = read_dataset_chunk(ds, key)
+
     elif file_format == '.zarr':
         f = zarr.open(input_file, mode='r')
         ds = f["t00000"]
         key, rslice = make_random_key(ds, resolution)
         data, read_dur = read_dataset_chunk(ds, key)
+
     elif file_format == ".tif":
-        f = tifffile.TiffFile(input_file)
-        num_slices = len(f.pages)
-        f.close()
-        rslice = random.randrange(num_slices)
-        data, read_dur = read_tiff_slice(input_file, rslice)
+        with tifffile.TiffFile(input_file) as f:
+            # This works with the 4 or so Tiffs that I tested
+            z = zarr.open(f.aszarr(), 'r')
+            rslice = random.randrange(z.shape[0])  # Axis order ZYX
+            logging.info(f"loading {rslice}")
+            start = timer()
+            data = z[rslice][()]
+            end = timer()
+            read_dur = end - start
+            logging.info(f"loaded {data.shape}, {data.nbytes} bytes, time {read_dur}s")
     else:
         raise ValueError("Unsupported input file format: " + file_format)
 
