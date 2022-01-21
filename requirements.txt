@@ -4,3 +4,5 @@ pandas
 numpy
 h5py
 tifffile
+scikit-image
+matplotlib
