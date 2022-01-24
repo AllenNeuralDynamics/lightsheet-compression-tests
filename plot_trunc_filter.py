@@ -3,7 +3,7 @@ import numcodecs
 import zarr
 import tifffile
 import numpy as np
-compress_zarr = __import__("compress-zarr")
+import compress_zarr
 
 
 filepath = "/allen/scratch/aindtemp/data/anatomy/2020-12-01-training-data/2020-12-01-stack-15/images/BrainSlice1_MMStack_Pos33_15_shift.tif"
