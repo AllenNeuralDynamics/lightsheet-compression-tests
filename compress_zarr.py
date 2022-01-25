@@ -152,12 +152,13 @@ def main():
     parser.add_argument("-n","--num-tiles", type=int, default=1)
     parser.add_argument("-r","--resolution", type=str, default="1")
     parser.add_argument("-s","--random-seed", type=int, default=None)
-    parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain/data.h5")
-    parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/david.feng/test_file.zarr")
+    parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/2020-12-01-training-data/2020-12-01-stack-15/images/BrainSlice1_MMStack_Pos33_15_shift.tif")
+    parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test_file.zarr")
     parser.add_argument("-o","--output-metrics-file", type=str, default="./compression_metrics.csv")
     parser.add_argument("-l","--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c","--codecs", nargs="+", type=str, default=["blosc"])
     parser.add_argument("-t","--trunc-bits", nargs="+", type=int, default=[0,2,4])
+    parser.add_argument("-m", "--metrics", nargs="+", type=str, default=None)  # [mse, ssim, psnr]
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -174,7 +175,8 @@ def main():
         random_seed=args.random_seed,
         input_file=args.input_file,
         output_data_file=args.output_data_file,
-        output_metrics_file=args.output_metrics_file)
+        output_metrics_file=args.output_metrics_file,
+        quality_metrics=args.metrics)
 
 def read_dataset_chunk(dataset, key):
     logging.info(f"loading {key}")
@@ -224,7 +226,7 @@ def read_random_chunk(input_file, resolution):
 
     return data, rslice, read_dur
 
-def compress_write(data, compressor, filters, output_path):
+def compress_write(data, compressor, filters, output_path, quality_metrics):
     psutil.cpu_percent(interval=None)
     start = timer()
     ds = zarr.DirectoryStore(output_path)
@@ -234,7 +236,6 @@ def compress_write(data, compressor, filters, output_path):
     end = timer()
     compress_dur = end - start
     logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}, cpu = {cpu_utilization}%")
-
 
     #start = timer()
     #zarr.copy_store(za.store, zarr.DirectoryStore(output_path), if_exists='replace')
@@ -247,13 +248,30 @@ def compress_write(data, compressor, filters, output_path):
         'compress_time': compress_dur,
         'bytes_written': za.nbytes_stored,
         'shape': data.shape,
-        'cpu_utilization': cpu_utilization
+        'cpu_utilization': cpu_utilization,
         #'write_time': write_dur
     }
 
+    if quality_metrics:
+        metrics = eval_quality(data, za[:], quality_metrics)
+        out.update(metrics)
+
     return out
 
-def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file):
+def eval_quality(input_data, decoded_data, quality_metrics):
+    import skimage.metrics as metrics
+    qa = {}
+    if 'mse' in quality_metrics:
+        qa['mse'] = metrics.mean_squared_error(input_data, decoded_data)
+    if 'ssim' in quality_metrics:
+        qa['ssim'] = metrics.structural_similarity(input_data, decoded_data,
+                                                   data_range=decoded_data.max() - decoded_data.min())
+    if 'psnr' in quality_metrics:
+        qa['psnr'] = metrics.peak_signal_noise_ratio(input_data, decoded_data,
+                                                     data_range=decoded_data.max() - decoded_data.min())
+    return qa
+
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file, quality_metrics):
     if random_seed is not None:
         random.seed(random_seed)
 
@@ -278,17 +296,13 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
             logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-            metrics = compress_write(data, compressor, filters, output_data_file)
+            metrics = compress_write(data, compressor, filters, output_data_file, quality_metrics)
 
+            tile_metrics.update(metrics)
             tile_metrics['read_time'] = read_time
-            tile_metrics['bytes_read'] = metrics['bytes_read']
-            tile_metrics['shape'] = metrics['shape']
             tile_metrics['read_bps'] = metrics['bytes_read'] / read_time
-            tile_metrics['compress_time'] = metrics['compress_time']
-            tile_metrics['bytes_written'] = metrics['bytes_written']
             tile_metrics['compress_bps'] = metrics['bytes_written'] / metrics['compress_time']
             tile_metrics['storage_ratio'] = metrics['bytes_read'] / metrics['bytes_written']
-            tile_metrics['cpu_utilization'] = metrics['cpu_utilization']
             # tile_metrics['write_time'] = data['write_time']
             # tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
 
