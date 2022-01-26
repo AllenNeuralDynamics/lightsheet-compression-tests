@@ -1,5 +1,6 @@
 import h5py
 import random
+import math
 import zarr
 import numcodecs
 import argparse
@@ -18,13 +19,13 @@ def trunc_filter(bits):
     scale = 1.0 / (2 ** bits)
     return [] if bits == 0 else [ numcodecs.fixedscaleoffset.FixedScaleOffset(offset=0, scale=scale, dtype=np.uint16) ]
 
-def blosc_compressor_lib(trunc_bits):
+def blosc_compressor_lib(trunc_bits, chunk_factor):
     cnames = [ 'zstd', 'blosclz', 'lz4', 'lz4hc', 'zlib' ]#, 'snappy' ]
     shuffles = [ numcodecs.Blosc.SHUFFLE, numcodecs.Blosc.NOSHUFFLE ]
     clevels = [ 1, 3, 5, 9 ]
 
     opts = []
-    for cname, clevel, shuffle, tb in itertools.product(cnames, clevels, shuffles, trunc_bits):
+    for cname, clevel, shuffle, tb, cf in itertools.product(cnames, clevels, shuffles, trunc_bits, chunk_factor):
         opts.append({
             'name': f'blosc-{cname}',
             'compressor': numcodecs.Blosc(cname=cname, clevel=clevel, shuffle=shuffle),
@@ -33,23 +34,25 @@ def blosc_compressor_lib(trunc_bits):
                 'shuffle': shuffle,
                 'level': clevel,
                 'trunc': tb,
+                "chunk_factor": cf
             }
         })
 
     return opts
 
-def lossless_compressor_lib(trunc_bits):
+def lossless_compressor_lib(trunc_bits, chunk_factor):
     clevels = [ 1, 3, 5, 9 ]
 
     opts = []
-    for clevel,tb in itertools.product(clevels, trunc_bits):
+    for clevel, tb, cf in itertools.product(clevels, trunc_bits, chunk_factor):
         opts.append({
             'name': 'zlib',
             'compressor': numcodecs.zlib.Zlib(level=clevel),
             'filters': trunc_filter(tb),
             'params': {
                 'level': clevel,
-                'trunc': tb
+                'trunc': tb,
+                'chunk_factor': cf
             }
         })
 
@@ -59,7 +62,8 @@ def lossless_compressor_lib(trunc_bits):
             'filters': trunc_filter(tb),
             'params': {
                 'level': clevel,
-                'trunc': tb
+                'trunc': tb,
+                'chunk_factor': cf
             }
         })
 
@@ -69,7 +73,8 @@ def lossless_compressor_lib(trunc_bits):
             'filters': trunc_filter(tb),
             'params': {
                 'level': clevel,
-                'trunc': tb
+                'trunc': tb,
+                'chunk_factor': cf
             }
         })
 
@@ -79,13 +84,14 @@ def lossless_compressor_lib(trunc_bits):
             'filters': trunc_filter(tb),
             'params': {
                 'level': clevel,
-                'trunc': tb
+                'trunc': tb,
+                'chunk_factor': cf
             }
         })
 
     return opts
 
-def lossy_compressor_lib(trunc_bits):
+def lossy_compressor_lib(trunc_bits, chunk_factor):
     import zfpy
     tols = [ 0, 2**4, 2**8, 2**16  ]
     rates = [ 1.0, 0.8, 0.5 ] # maxbits / 4^d
@@ -104,9 +110,10 @@ def lossy_compressor_lib(trunc_bits):
             'rate': None,
             'precision': None,
             'trunc': tb,
-            'level': 0            
+            'level': 0,
+            'chunk_factor': cf
         }
-    } for t,tb in itertools.product(tols,trunc_bits)]
+    } for t, tb, cf in itertools.product(tols, trunc_bits, chunk_factor)]
 
     compressors += [{
         'name': 'zfpy-fixed-rate',
@@ -118,8 +125,9 @@ def lossy_compressor_lib(trunc_bits):
             'precision': None,
             'trunc': tb,
             'level': 0,
+            'chunk_factor': cf
         }
-    } for r,tb in itertools.product(rates, trunc_bits)]
+    } for r, tb, cf in itertools.product(rates, trunc_bits, chunk_factor)]
 
     compressors += [{
         'name': 'zfpy-fixed-precision',
@@ -131,22 +139,23 @@ def lossy_compressor_lib(trunc_bits):
             'precision': p,
             'trunc': tb,
             'level': 0,
+            'chunk_factor': cf
         }
-    } for p,tb in itertools.product(precisions, trunc_bits)]
+    } for p, tb, cf in itertools.product(precisions, trunc_bits, chunk_factor)]
 
     return compressors
 
-def build_compressors(codecs, trunc_bits):
+def build_compressors(codecs, trunc_bits, chunk_factor):
     compressors = []
     if 'other-lossless' in codecs:
-        compressors += lossless_compressor_lib(trunc_bits)
+        compressors += lossless_compressor_lib(trunc_bits, chunk_factor)
     if 'blosc' in codecs:
-        compressors += blosc_compressor_lib(trunc_bits)
+        compressors += blosc_compressor_lib(trunc_bits, chunk_factor)
     if 'lossy' in codecs:
-        compressors += lossy_compressor_lib(trunc_bits)
+        compressors += lossy_compressor_lib(trunc_bits, chunk_factor)
 
     return compressors
-    
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-n","--num-tiles", type=int, default=1)
@@ -158,7 +167,8 @@ def main():
     parser.add_argument("-l","--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c","--codecs", nargs="+", type=str, default=["blosc"])
     parser.add_argument("-t","--trunc-bits", nargs="+", type=int, default=[0,2,4])
-    parser.add_argument("-m", "--metrics", nargs="+", type=str, default=None)  # [mse, ssim, psnr]
+    parser.add_argument("-b", "--block-scale-factor", nargs="+", type=int, default=[1])
+    parser.add_argument("-m", "--metrics", nargs="+", type=str, default=[])  # [mse, ssim, psnr]
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -167,7 +177,7 @@ def main():
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
     logging.getLogger().setLevel(args.log_level)
     
-    compressors = build_compressors(args.codecs, args.trunc_bits)
+    compressors = build_compressors(args.codecs, args.trunc_bits, args.block_scale_factor)
 
     run(compressors=compressors,
         num_tiles=args.num_tiles,
@@ -175,8 +185,8 @@ def main():
         random_seed=args.random_seed,
         input_file=args.input_file,
         output_data_file=args.output_data_file,
-        output_metrics_file=args.output_metrics_file,
-        quality_metrics=args.metrics)
+        quality_metrics=args.metrics,
+        output_metrics_file=args.output_metrics_file)
 
 def read_dataset_chunk(dataset, key):
     logging.info(f"loading {key}")
@@ -226,11 +236,31 @@ def read_random_chunk(input_file, resolution):
 
     return data, rslice, read_dur
 
-def compress_write(data, compressor, filters, output_path, quality_metrics):
+def guess_chunk_shape(data, bytes_per_pixel, scale_factor, min_side=8):
+    """Use the zarr chunk size heuristic as a starting point, then
+    scale each dimension by scale_factor, clamping if necessary.
+    Result shape will range between:
+    [min_side, min_side, min_side] <= chunk <= [data.shape[0], data.shape[1], data.shape[2]]"""
+    from zarr.util import guess_chunks
+    chunk_shape = [math.floor(c * scale_factor) for c in guess_chunks(data.shape, bytes_per_pixel)]
+    for i in range(len(chunk_shape)):
+        if chunk_shape[i] < min_side:
+            chunk_shape[i] = min_side
+        if chunk_shape[i] > data.shape[i]:
+            chunk_shape[i] = data.shape[i]
+    chunk_size = estimate_size(chunk_shape, bytes_per_pixel)
+    return chunk_shape, chunk_size
+
+def estimate_size(shape, bytes_per_pixel):
+    """Array size in MiB"""
+    return (np.product(shape) * bytes_per_pixel) / (1024. * 1024)
+
+def compress_write(data, compressor, filters, block_multiplier, quality_metrics, output_path):
+    chunk_shape, chunk_size = guess_chunk_shape(data, bytes_per_pixel=2, scale_factor=block_multiplier)
     psutil.cpu_percent(interval=None)
     start = timer()
     ds = zarr.DirectoryStore(output_path)
-    za = zarr.array(data, chunks=True, filters=filters, compressor=compressor, store=ds, overwrite=True)
+    za = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=ds, overwrite=True)
     logging.info(str(za.info))
     cpu_utilization = psutil.cpu_percent(interval=None)
     end = timer()
@@ -248,7 +278,9 @@ def compress_write(data, compressor, filters, output_path, quality_metrics):
         'compress_time': compress_dur,
         'bytes_written': za.nbytes_stored,
         'shape': data.shape,
-        'cpu_utilization': cpu_utilization,
+        'chunk_shape': chunk_shape,
+        'chunk_size' : chunk_size,
+        'cpu_utilization': cpu_utilization
         #'write_time': write_dur
     }
 
@@ -271,7 +303,7 @@ def eval_quality(input_data, decoded_data, quality_metrics):
                                                      data_range=decoded_data.max() - decoded_data.min())
     return qa
 
-def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, output_metrics_file, quality_metrics):
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, quality_metrics, output_metrics_file):
     if random_seed is not None:
         random.seed(random_seed)
 
@@ -285,6 +317,7 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
         for c in compressors:
             compressor = c['compressor']
             filters = c['filters']
+            chunk_factor = c['params']['chunk_factor']
 
             tile_metrics = {
                 'compressor_name': c['name'],
@@ -296,7 +329,7 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
             logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-            metrics = compress_write(data, compressor, filters, output_data_file, quality_metrics)
+            metrics = compress_write(data, compressor, filters, chunk_factor, quality_metrics, output_data_file)
 
             tile_metrics.update(metrics)
             tile_metrics['read_time'] = read_time
