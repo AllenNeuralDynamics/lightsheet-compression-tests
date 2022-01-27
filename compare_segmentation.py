@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import shutil
 from timeit import default_timer as timer
 
 import matplotlib.pyplot as plt
@@ -72,8 +73,9 @@ def main():
     ground_truth_file = './true_seg'
 
     output_image_dir = "./images"
-    if not os.path.isdir(output_image_dir):
-        os.mkdir(output_image_dir)
+    if os.path.isdir(output_image_dir):
+        shutil.rmtree(output_image_dir)
+    os.mkdir(output_image_dir)
 
     seg_params_file = os.path.join(output_image_dir, "seg_params.json")
 
