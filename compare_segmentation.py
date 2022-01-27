@@ -1,6 +1,7 @@
 import json
 import logging
 import math
+import numbers
 import os
 import shutil
 from timeit import default_timer as timer
@@ -232,26 +233,33 @@ def plot_examples(segdir, param_file, ground_truth, outfile='./seg_examples.png'
     cols = int(n / rows) + 1
 
     fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
+
+    # Try to evenly space parameter annotations on each image
+    label_step = 1.0 / len(df.columns)
+    fontsize = 8
+
     # MIP of ground-truth segmentation
     axes.ravel()[0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
     axes.ravel()[0].set_title(f"ground truth")
+    # Now plot the test segmentations
     for i in range(df.shape[0]):
         test_seg = get_image(segdir, df.index[i])
         # MIP of test segmentation
         axes.ravel()[i + 1].imshow(np.max(test_seg, axis=0), cmap='gray', aspect='auto')
-        axes.ravel()[i + 1].annotate(df['compressor_name'].iloc[i], xy=(0, 0.8), color='red',
-                                     xycoords='axes fraction', fontsize=10)
-        axes.ravel()[i + 1].annotate(f"shuffle={df['shuffle'].iloc[i]}", xy=(0, 0.6), color='red',
-                                     xycoords='axes fraction', fontsize=10)
-        axes.ravel()[i + 1].annotate(f"level={df['level'].iloc[i]}", xy=(0, 0.4), color='red',
-                                     xycoords='axes fraction', fontsize=10)
-        axes.ravel()[i + 1].annotate(f"trunc={df['trunc'].iloc[i]}", xy=(0, 0.2), color='red',
-                                     xycoords='axes fraction', fontsize=10)
-        axes.ravel()[i + 1].annotate(f"error={round(df['adapted_rand_error'].iloc[i], 4)}", xy=(0, 0.05), color='red',
-                                     xycoords='axes fraction', fontsize=10)
+        # Annotate compression parameters and accuracy metrics
+        for j, column in enumerate(df):
+            val = df[column].iloc[i]
+            val = round(val, 4) if isinstance(val, numbers.Number) else val
+            axes.ravel()[i + 1].annotate(
+                f"{column}={val}",
+                xy=(0, j * label_step),
+                color='red',
+                xycoords='axes fraction',
+                fontsize=fontsize
+            )
     for ax in axes.ravel():
         ax.axis("off")
-    plt.tight_layout()
+    # plt.tight_layout()
     plt.savefig(outfile, dpi=600)
     plt.show()
 
