@@ -1,17 +1,20 @@
-import os
-import skimage
-import zarr
-import tifffile
+import json
 import logging
+import math
+import os
+from timeit import default_timer as timer
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from timeit import default_timer as timer
-from skimage.metrics import adapted_rand_error
+import skimage
 import skimage.filters
-from skimage.filters.thresholding import threshold_otsu, threshold_mean
-import compress_zarr
+import tifffile
+import zarr
+from skimage.filters.thresholding import threshold_mean
+from skimage.metrics import adapted_rand_error
 
+import compress_zarr
 
 USE_IMAGEJ = True
 
@@ -20,7 +23,8 @@ if USE_IMAGEJ:
     import scyjava
     # Increase JVM memory, 32-bit float images can be large...
     scyjava.config.add_option("-Xmx12g")
-    # Start ImageJ
+    # Start ImageJ with maven endpoints for Fiji and SNT.
+    # Headless since we won't display any Java-based UI components
     ij = imagej.init(['sc.fiji:fiji', 'org.morphonets:SNT'], headless=True)
     # Java classes can only be imported once the JVM starts
     SNTUtils = scyjava.jimport("sc.fiji.snt.SNTUtils")
@@ -63,9 +67,21 @@ def main():
     logging.getLogger().setLevel(logging.INFO)
 
     input_file = r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif"
+
+    # This will be created later
+    ground_truth_file = './true_seg'
+
+    output_image_dir = "./images"
+    if not os.path.isdir(output_image_dir):
+        os.mkdir(output_image_dir)
+
+    seg_params_file = os.path.join(output_image_dir, "seg_params.json")
+
     output_metrics_file = "./segmentation_metrics.csv"
+
     # Voxel spacing from image metadata
     voxel_spacing = [0.255, 0.255, 0.999]
+
     # Coordinates of bounding cuboid ROI
     min_z = 175
     max_z = 207
@@ -80,18 +96,40 @@ def main():
     # max_y = 1872
     # min_x = 2188
     # max_x = 2817
+    xbounds = (min_x, max_x)
+    ybounds = (min_y, max_y)
+    zbounds = (min_z, max_z)
 
+    run(input_file,
+        xbounds,
+        ybounds,
+        zbounds,
+        voxel_spacing,
+        ground_truth_file,
+        output_image_dir,
+        seg_params_file,
+        output_metrics_file)
+
+    plot_examples(output_image_dir,
+                  seg_params_file,
+                  ground_truth_file,
+                  # plot kwargs
+                  compressor_name='blosc-zlib',
+                  shuffle=1,
+                  #level=9
+                  )
+
+def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfile, output_image_dir, seg_params_file,
+        output_metrics_file):
     with tifffile.TiffFile(input_file) as f:
         z = zarr.open(f.aszarr(), 'r')
-        data = z[min_z:max_z, min_y:max_y, min_x:max_x]
-        logging.info(f"loading volume, size {(np.product(data.shape) * 2) / (1024. * 1024)} MiB")
+        data = z[zbounds[0]:zbounds[1], ybounds[0]:ybounds[1], xbounds[0]:xbounds[1]]
+        logging.info(f"loading volume, shape {data.shape}, size {(np.product(data.shape) * 2) / (1024. * 1024)} MiB")
 
-    trunc_bits = [0, 2, 4]
+    trunc_bits = [0, 2, 4, 8]
     chunk_factor = [1]
     compressors = compress_zarr.build_compressors("blosc", trunc_bits)
     print(len(compressors))
-
-    # fig, axes = plt.subplots(nrows=len(compressors), ncols=2)
 
     if USE_IMAGEJ:
         # Nyquist
@@ -106,16 +144,19 @@ def main():
     else:
         # Voxel size is ignored in scikit-image filters, use pixel units
         py_sigmas = [2.0]
-        py_op = skimage.filters.frangi
-        response = py_op(data, py_sigmas, black_ridges=False)
+        response = skimage.filters.frangi(data, py_sigmas, black_ridges=False)
 
     threshold_func = threshold_mean
 
     true_seg = threshold(response, threshold_func)
+    tifffile.imwrite(ground_truth_outfile, true_seg)
 
     all_metrics = []
 
     total_tests = len(compressors)
+
+    # Dictionary mapping segmentation result image to its parameters
+    seg_params = {}
 
     for i, c in enumerate(compressors):
         compressor = c['compressor']
@@ -133,36 +174,84 @@ def main():
         if USE_IMAGEJ:
             start = timer()
             decoded = encode_decode(data, filters, compressor)
-            response = filter_ij(decoded, Frangi(ij_sigmas, voxel_spacing, np.max(decoded)))
+            response = filter_ij(decoded, Frangi(ij_sigmas, voxel_spacing, np.max(decoded), num_threads))
             test_seg = threshold(response, threshold_func)
             end = timer()
             seg_dur = end - start
             logging.info(f"seg time ij = {seg_dur}")
         else:
             start = timer()
-            response = skimage.filters.frangi(encode_decode(data, filters, compressor), sigmas=py_sigmas, black_ridges=False)
+            response = skimage.filters.frangi(encode_decode(data, filters, compressor), sigmas=py_sigmas,
+                                              black_ridges=False)
             test_seg = threshold(response, threshold_func)
             end = timer()
             seg_dur = end - start
             logging.info(f"seg time sklearn = {seg_dur}")
 
-        seg_metrics.update(compare_seg(true_seg, test_seg))
-        all_metrics.append(seg_metrics)
+        outfile = f"test_seg_{i}.tif"
+        tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
 
-        # axes[i, 0].imshow(np.max(true_seg, axis=0), cmap=plt.cm.gray, vmin=0, vmax=1)
-        # axes[i, 0].set_title('True segmentation')
-        # axes[i, 1].imshow(np.max(test_seg, axis=0), cmap=plt.cm.gray, vmin=0, vmax=1)
-        # axes[i, 1].set_title(f'Rand Error={metrics["Adapted Rand Error"]}')
+        seg_metrics.update(compare_seg(true_seg, test_seg))
+        seg_params[outfile] = seg_metrics
+        all_metrics.append(seg_metrics)
 
     output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
 
     df = pd.DataFrame.from_records(all_metrics)
     df.to_csv(output_metrics_file, index_label='test_number')
 
+    with open(seg_params_file, 'w') as f:
+        json.dump(seg_params, f)
+
     if USE_IMAGEJ:
         scyjava.shutdown_jvm()
 
-    # plt.show()
+
+def get_image(imdir, filename):
+    if filename in os.listdir(imdir):
+        return tifffile.imread(os.path.join(imdir, filename))
+    return None
+
+
+def plot_examples(segdir, param_file, ground_truth, outfile='./seg_examples.png', sort_error=True, **kwargs):
+    with open(param_file, 'r') as f:
+        df = pd.DataFrame.from_dict(json.load(f), orient='index')
+    # Filter segmentations by given keys
+    for key, val in kwargs.items():
+        df = df[df[key] == val]
+    if sort_error:
+        df = df.sort_values('adapted_rand_error')
+
+    true_seg = tifffile.imread(ground_truth)
+
+    # Make a square-ish grid
+    n = df.shape[0] + 1  # include the ground-truth image
+    rows = int(math.sqrt(n))
+    cols = int(n / rows) + 1
+
+    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
+    # MIP of ground-truth segmentation
+    axes.ravel()[0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
+    axes.ravel()[0].set_title(f"ground truth")
+    for i in range(df.shape[0]):
+        test_seg = get_image(segdir, df.index[i])
+        # MIP of test segmentation
+        axes.ravel()[i + 1].imshow(np.max(test_seg, axis=0), cmap='gray', aspect='auto')
+        axes.ravel()[i + 1].annotate(df['compressor_name'].iloc[i], xy=(0, 0.8), color='red',
+                                     xycoords='axes fraction', fontsize=10)
+        axes.ravel()[i + 1].annotate(f"shuffle={df['shuffle'].iloc[i]}", xy=(0, 0.6), color='red',
+                                     xycoords='axes fraction', fontsize=10)
+        axes.ravel()[i + 1].annotate(f"level={df['level'].iloc[i]}", xy=(0, 0.4), color='red',
+                                     xycoords='axes fraction', fontsize=10)
+        axes.ravel()[i + 1].annotate(f"trunc={df['trunc'].iloc[i]}", xy=(0, 0.2), color='red',
+                                     xycoords='axes fraction', fontsize=10)
+        axes.ravel()[i + 1].annotate(f"error={round(df['adapted_rand_error'].iloc[i], 4)}", xy=(0, 0.05), color='red',
+                                     xycoords='axes fraction', fontsize=10)
+    for ax in axes.ravel():
+        ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=600)
+    plt.show()
 
 
 if __name__ == "__main__":
