@@ -39,7 +39,7 @@ def plot_segmentations(segdir, param_file, ground_truth_file, df_queries=None, s
 
     # Try to evenly space parameter annotations on each image
     label_step = 1.0 / len(df.columns)
-    fontsize = 10
+    fontsize = 8
 
     # MIP of ground-truth segmentation
     axes.ravel()[0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
@@ -62,8 +62,8 @@ def plot_segmentations(segdir, param_file, ground_truth_file, df_queries=None, s
             )
     for ax in axes.ravel():
         ax.axis("off")
-    # plt.tight_layout()
-    plt.savefig(outfile, dpi=600)
+
+    plt.savefig(outfile, bbox_inches='tight', dpi=600)
     plt.show()
 
 
@@ -78,16 +78,32 @@ def plot_skeletons(segdir, param_file, ground_truth_file, df_queries=None, sort_
     rows = df.shape[0] + 1  # include ground-truth
     cols = 2
     fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
+    # Try to evenly space parameter annotations on each image
+    label_step = 1.0 / len(df.columns)
+    fontsize = 8
     # MIP of ground-truth segmentation
-    axes[0][0].imshow(np.max(true_seg, axis=0), cmap='gray')
+    axes[0][0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
     axes[0][0].set_title(f"ground truth")
-    axes[0][1].imshow(np.max(skeletonize(true_seg), axis=0), cmap='gray')
+    axes[0][1].imshow(np.max(skeletonize(true_seg), axis=0), cmap='gray', aspect='auto')
     for i in range(df.shape[0]):
         test_seg = tifffile.imread(os.path.join(segdir, df.index[i]))
-        axes[i + 1][0].imshow(np.max(test_seg, axis=0), cmap='gray')
-        axes[i + 1][1].imshow(np.max(skeletonize(test_seg), axis=0), cmap='gray')
+        axes[i + 1][0].imshow(np.max(test_seg, axis=0), cmap='gray', aspect='auto')
+        axes[i + 1][1].imshow(np.max(skeletonize(test_seg), axis=0), cmap='gray', aspect='auto')
+        # Annotate compression parameters and accuracy metrics
+        for j, column in enumerate(df):
+            val = df[column].iloc[i]
+            val = round(val, 4) if isinstance(val, numbers.Number) else val
+            axes[i + 1][0].annotate(
+                f"{column}={val}",
+                xy=(0, j * label_step),
+                color='red',
+                xycoords='axes fraction',
+                fontsize=fontsize
+            )
+    for ax in axes.ravel():
+        ax.axis("off")
 
-    plt.savefig(outfile, dpi=600)
+    plt.savefig(outfile, bbox_inches='tight', dpi=600)
     plt.show()
 
 
@@ -97,7 +113,6 @@ def main():
     ground_truth_file = './images/true_seg.tif'
     queries = ['compressor_name == "blosc-zstd"', 'level == 1', 'shuffle == 0']
     plot_skeletons(output_image_dir, seg_params_file, ground_truth_file, queries)
-
 
 if __name__ == "__main__":
     main()
