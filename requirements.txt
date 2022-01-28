@@ -7,3 +7,4 @@ tifffile
 scikit-image
 scikit-learn
 matplotlib
+psutil
