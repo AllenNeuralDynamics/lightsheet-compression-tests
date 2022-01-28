@@ -100,7 +100,7 @@ def main():
     seg_params_file = os.path.join(args.output_image_dir, "seg_params.json")
 
     chunk_factor = [1]
-    compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits)
+    compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits, chunk_factor)
 
     run(args.input_file, compressors, args.output_groundtruth_file, args.output_image_dir, seg_params_file,
         args.output_metrics_file, args.metrics)
