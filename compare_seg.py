@@ -1,7 +1,10 @@
+import argparse
 import json
 import logging
 import os
 import shutil
+import sys
+from fractions import Fraction
 from timeit import default_timer as timer
 
 import numpy as np
@@ -53,10 +56,11 @@ def filter_ij(im, op):
     return ij.py.from_java(java_out)
 
 
-def compare_seg(true_seg, test_seg):
-    metrics = dict()
-    metrics['adapted_rand_error'], metrics['prec'], metrics['rec'] = adapted_rand_error(true_seg, test_seg)
-    return metrics
+def compare_seg(true_seg, test_seg, metrics):
+    m = dict()
+    if "are" in metrics:
+        m['adapted_rand_error'], m['prec'], m['rec'] = adapted_rand_error(true_seg, test_seg)
+    return m
 
 
 def threshold(im, func):
@@ -64,59 +68,52 @@ def threshold(im, func):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input-file", type=str, default=r"C:\Users\cameron.arshadi\Desktop\OP_1.tif")
+    # parser.add_argument("-i", "--input-file", type=str, default=r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif")
+    parser.add_argument("-g", "--output-groundtruth-file", type=str, default="./images/true_seg.tif")
+    parser.add_argument("-d", "--output-image-dir", type=str, default="./images")
+    parser.add_argument("-o", "--output-metrics-file", type=str, default="./segmentation_metrics.csv")
+    parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
+    parser.add_argument("-c", "--codecs", nargs="+", type=str, default=["blosc"])
+    parser.add_argument("-t", "--trunc-bits", nargs="+", type=int, default=[0, 2, 4])
+    parser.add_argument("-m", "--metrics", nargs="+", type=str, default=['are'])
+
+    args = parser.parse_args(sys.argv[1:])
+
+    print(args)
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
-    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger().setLevel(args.log_level)
 
-    input_file = r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif"
+    if os.path.isdir(args.output_image_dir):
+        shutil.rmtree(args.output_image_dir)
+    os.mkdir(args.output_image_dir)
 
-    # This will be created later
-    ground_truth_file = './true_seg.tif'
+    seg_params_file = os.path.join(args.output_image_dir, "seg_params.json")
 
-    output_image_dir = "./images"
-    if os.path.isdir(output_image_dir):
-        shutil.rmtree(output_image_dir)
-    os.mkdir(output_image_dir)
-
-    seg_params_file = os.path.join(output_image_dir, "seg_params.json")
-
-    output_metrics_file = "./segmentation_metrics.csv"
-
-    # Voxel spacing from image metadata
-    voxel_spacing = [0.255, 0.255, 0.999]
-
-    # Coordinates of bounding cuboid ROI
-    min_z = 175
-    max_z = 207
-    min_y = 1435
-    max_y = 1730
-    min_x = 2325
-    max_x = 2513
-    # Bigger block, filtering takes ~7X longer
-    # min_z = 115
-    # max_z = 232
-    # min_y = 1265
-    # max_y = 1872
-    # min_x = 2188
-    # max_x = 2817
-    xbounds = (min_x, max_x)
-    ybounds = (min_y, max_y)
-    zbounds = (min_z, max_z)
-
-    run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_file, output_image_dir, seg_params_file,
-        output_metrics_file)
-
-
-def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfile, output_image_dir, seg_params_file,
-        output_metrics_file):
-    with tifffile.TiffFile(input_file) as f:
-        z = zarr.open(f.aszarr(), 'r')
-        data = z[zbounds[0]:zbounds[1], ybounds[0]:ybounds[1], xbounds[0]:xbounds[1]]
-        logging.info(f"loading volume, shape {data.shape}, size {(np.product(data.shape) * 2) / (1024. * 1024)} MiB")
-
-    trunc_bits = [0, 2, 4, 8]
     chunk_factor = [1]
-    compressors = compress_zarr.build_compressors("blosc", trunc_bits)
-    print(len(compressors))
+    compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits)
+
+    run(args.input_file, compressors, args.output_groundtruth_file, args.output_image_dir, seg_params_file,
+        args.output_metrics_file, args.metrics)
+
+
+def parse_tiff_metadata(f):
+    xres = Fraction(*f.pages[0].tags['XResolution'].value)
+    yres = Fraction(*f.pages[0].tags['YResolution'].value)
+    spacing = float(f.imagej_metadata['spacing'])
+    voxel_spacing = [1. / float(xres), 1. / float(yres), spacing]
+    bytes_per_sample = int(f.pages[0].tags['BitsPerSample'].value) / 8
+    return voxel_spacing, bytes_per_sample
+
+
+def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_params_file, output_metrics_file, metrics):
+    with tifffile.TiffFile(input_file) as f:
+        voxel_spacing, bytes_per_sample = parse_tiff_metadata(f)
+        data = f.asarray()
+        logging.info(f"loading volume, shape {data.shape},"
+                     f" size {(np.product(data.shape) * bytes_per_sample) / (1024. * 1024)} MiB,"
+                     f" voxel spacing {voxel_spacing}")
 
     tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
 
@@ -180,7 +177,7 @@ def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfi
         outfile = f"test_seg_{i}.tif"
         tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
 
-        seg_metrics.update(compare_seg(true_seg, test_seg))
+        seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
         seg_params[outfile] = seg_metrics
         all_metrics.append(seg_metrics)
 

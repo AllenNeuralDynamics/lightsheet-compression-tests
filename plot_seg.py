@@ -93,7 +93,7 @@ def plot_skeletons(segdir, param_file, ground_truth, outfile='./skel_examples.pn
 def main():
     output_image_dir = "./images"
     seg_params_file = os.path.join(output_image_dir, "seg_params.json")
-    ground_truth_file = './true_seg.tif'
+    ground_truth_file = './images/true_seg.tif'
     plot_segmentations(output_image_dir,
                        seg_params_file,
                        ground_truth_file,
