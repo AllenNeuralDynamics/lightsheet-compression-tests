@@ -14,6 +14,7 @@ import skimage.filters
 import tifffile
 import zarr
 from skimage.filters.thresholding import threshold_mean
+from skimage.morphology import skeletonize
 from skimage.metrics import adapted_rand_error
 
 import compress_zarr
@@ -30,6 +31,7 @@ if USE_IMAGEJ:
     ij = imagej.init(['sc.fiji:fiji', 'org.morphonets:SNT'], headless=True)
     # Java classes can only be imported once the JVM starts
     SNTUtils = scyjava.jimport("sc.fiji.snt.SNTUtils")
+    # This should be 4.0.8, but I get 4.0.3??
     print("We are running SNT version " + str(SNTUtils.VERSION))  # Java string
     # Frangi, et al., 1998
     Frangi = scyjava.jimport("sc.fiji.snt.filter.Frangi")
@@ -56,7 +58,7 @@ def filter_ij(im, op):
 
 def compare_seg(true_seg, test_seg):
     metrics = dict()
-    metrics['adapted_rand_error'], metrics['precision'], metrics['recall'] = adapted_rand_error(true_seg, test_seg)
+    metrics['adapted_rand_error'], metrics['prec'], metrics['rec'] = adapted_rand_error(true_seg, test_seg)
     return metrics
 
 
@@ -71,7 +73,7 @@ def main():
     input_file = r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif"
 
     # This will be created later
-    ground_truth_file = './true_seg'
+    ground_truth_file = './true_seg.tif'
 
     output_image_dir = "./images"
     if os.path.isdir(output_image_dir):
@@ -111,16 +113,17 @@ def main():
         ground_truth_file,
         output_image_dir,
         seg_params_file,
-        output_metrics_file)
+        output_metrics_file
+        )
 
-    plot_examples(output_image_dir,
-                  seg_params_file,
-                  ground_truth_file,
-                  # plot kwargs
-                  compressor_name='blosc-zlib',
-                  shuffle=1,
-                  #level=9
-                  )
+    plot_skeletons(output_image_dir,
+                       seg_params_file,
+                       ground_truth_file,
+                       # plot kwargs
+                       compressor_name='blosc-zstd',
+                       shuffle=1,
+                       level=1,
+                       )
 
 def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfile, output_image_dir, seg_params_file,
         output_metrics_file):
@@ -133,6 +136,8 @@ def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfi
     chunk_factor = [1]
     compressors = compress_zarr.build_compressors("blosc", trunc_bits)
     print(len(compressors))
+
+    tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
 
     if USE_IMAGEJ:
         # Nyquist
@@ -216,12 +221,20 @@ def get_image(imdir, filename):
     return None
 
 
-def plot_examples(segdir, param_file, ground_truth, outfile='./seg_examples.png', sort_error=True, **kwargs):
+def read_params(param_file):
     with open(param_file, 'r') as f:
-        df = pd.DataFrame.from_dict(json.load(f), orient='index')
-    # Filter segmentations by given keys
-    for key, val in kwargs.items():
+        return pd.DataFrame.from_dict(json.load(f), orient='index')
+
+
+def filter_df(df, args):
+    for key, val in args.items():
         df = df[df[key] == val]
+    return df
+
+
+def plot_segmentations(segdir, param_file, ground_truth, outfile='./seg_examples.png', sort_error=True, **kwargs):
+    # Filter segmentations by given keys
+    df = filter_df(read_params(param_file), kwargs)
     if sort_error:
         df = df.sort_values('adapted_rand_error')
 
@@ -260,6 +273,30 @@ def plot_examples(segdir, param_file, ground_truth, outfile='./seg_examples.png'
     for ax in axes.ravel():
         ax.axis("off")
     # plt.tight_layout()
+    plt.savefig(outfile, dpi=600)
+    plt.show()
+
+
+def plot_skeletons(segdir, param_file, ground_truth, outfile='./skel_examples.png', sort_error=True, **kwargs):
+    # Filter segmentations by given keys
+    df = filter_df(read_params(param_file), kwargs)
+    if sort_error:
+        df = df.sort_values('adapted_rand_error')
+
+    true_seg = tifffile.imread(ground_truth)
+
+    rows = df.shape[0] + 1  # include ground-truth
+    cols = 2
+    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
+    # MIP of ground-truth segmentation
+    axes[0][0].imshow(np.max(true_seg, axis=0), cmap='gray')
+    axes[0][0].set_title(f"ground truth")
+    axes[0][1].imshow(np.max(skeletonize(true_seg), axis=0), cmap='gray')
+    for i in range(df.shape[0]):
+        test_seg = get_image(segdir, df.index[i])
+        axes[i+1][0].imshow(np.max(test_seg, axis=0), cmap='gray')
+        axes[i+1][1].imshow(np.max(skeletonize(test_seg), axis=0), cmap='gray')
+
     plt.savefig(outfile, dpi=600)
     plt.show()
 
