@@ -1,12 +1,9 @@
 import json
 import logging
-import math
-import numbers
 import os
 import shutil
 from timeit import default_timer as timer
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import skimage
@@ -14,7 +11,6 @@ import skimage.filters
 import tifffile
 import zarr
 from skimage.filters.thresholding import threshold_mean
-from skimage.morphology import skeletonize
 from skimage.metrics import adapted_rand_error
 
 import compress_zarr
@@ -24,6 +20,7 @@ USE_IMAGEJ = True
 if USE_IMAGEJ:
     import imagej
     import scyjava
+
     # Increase JVM memory, 32-bit float images can be large...
     scyjava.config.add_option("-Xmx12g")
     # Start ImageJ with maven endpoints for Fiji and SNT.
@@ -105,25 +102,9 @@ def main():
     ybounds = (min_y, max_y)
     zbounds = (min_z, max_z)
 
-    run(input_file,
-        xbounds,
-        ybounds,
-        zbounds,
-        voxel_spacing,
-        ground_truth_file,
-        output_image_dir,
-        seg_params_file,
-        output_metrics_file
-        )
+    run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_file, output_image_dir, seg_params_file,
+        output_metrics_file)
 
-    plot_skeletons(output_image_dir,
-                       seg_params_file,
-                       ground_truth_file,
-                       # plot kwargs
-                       compressor_name='blosc-zstd',
-                       shuffle=1,
-                       level=1,
-                       )
 
 def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfile, output_image_dir, seg_params_file,
         output_metrics_file):
@@ -213,92 +194,6 @@ def run(input_file, xbounds, ybounds, zbounds, voxel_spacing, ground_truth_outfi
 
     if USE_IMAGEJ:
         scyjava.shutdown_jvm()
-
-
-def get_image(imdir, filename):
-    if filename in os.listdir(imdir):
-        return tifffile.imread(os.path.join(imdir, filename))
-    return None
-
-
-def read_params(param_file):
-    with open(param_file, 'r') as f:
-        return pd.DataFrame.from_dict(json.load(f), orient='index')
-
-
-def filter_df(df, args):
-    for key, val in args.items():
-        df = df[df[key] == val]
-    return df
-
-
-def plot_segmentations(segdir, param_file, ground_truth, outfile='./seg_examples.png', sort_error=True, **kwargs):
-    # Filter segmentations by given keys
-    df = filter_df(read_params(param_file), kwargs)
-    if sort_error:
-        df = df.sort_values('adapted_rand_error')
-
-    true_seg = tifffile.imread(ground_truth)
-
-    # Make a square-ish grid
-    n = df.shape[0] + 1  # include the ground-truth image
-    rows = int(math.sqrt(n))
-    cols = int(n / rows) + 1
-
-    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
-
-    # Try to evenly space parameter annotations on each image
-    label_step = 1.0 / len(df.columns)
-    fontsize = 8
-
-    # MIP of ground-truth segmentation
-    axes.ravel()[0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
-    axes.ravel()[0].set_title(f"ground truth")
-    # Now plot the test segmentations
-    for i in range(df.shape[0]):
-        test_seg = get_image(segdir, df.index[i])
-        # MIP of test segmentation
-        axes.ravel()[i + 1].imshow(np.max(test_seg, axis=0), cmap='gray', aspect='auto')
-        # Annotate compression parameters and accuracy metrics
-        for j, column in enumerate(df):
-            val = df[column].iloc[i]
-            val = round(val, 4) if isinstance(val, numbers.Number) else val
-            axes.ravel()[i + 1].annotate(
-                f"{column}={val}",
-                xy=(0, j * label_step),
-                color='red',
-                xycoords='axes fraction',
-                fontsize=fontsize
-            )
-    for ax in axes.ravel():
-        ax.axis("off")
-    # plt.tight_layout()
-    plt.savefig(outfile, dpi=600)
-    plt.show()
-
-
-def plot_skeletons(segdir, param_file, ground_truth, outfile='./skel_examples.png', sort_error=True, **kwargs):
-    # Filter segmentations by given keys
-    df = filter_df(read_params(param_file), kwargs)
-    if sort_error:
-        df = df.sort_values('adapted_rand_error')
-
-    true_seg = tifffile.imread(ground_truth)
-
-    rows = df.shape[0] + 1  # include ground-truth
-    cols = 2
-    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
-    # MIP of ground-truth segmentation
-    axes[0][0].imshow(np.max(true_seg, axis=0), cmap='gray')
-    axes[0][0].set_title(f"ground truth")
-    axes[0][1].imshow(np.max(skeletonize(true_seg), axis=0), cmap='gray')
-    for i in range(df.shape[0]):
-        test_seg = get_image(segdir, df.index[i])
-        axes[i+1][0].imshow(np.max(test_seg, axis=0), cmap='gray')
-        axes[i+1][1].imshow(np.max(skeletonize(test_seg), axis=0), cmap='gray')
-
-    plt.savefig(outfile, dpi=600)
-    plt.show()
 
 
 if __name__ == "__main__":
