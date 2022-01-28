@@ -18,21 +18,30 @@ from skimage.metrics import adapted_rand_error
 
 import compress_zarr
 
-USE_IMAGEJ = True
+logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
+logging.getLogger().setLevel(logging.INFO)
 
-if USE_IMAGEJ:
+try:
     import imagej
-    import scyjava
+    logging.info("Found pyimagej")
+    HAS_IMAGEJ = True
+except ImportError:
+    logging.warning("pyimagej not found, using scikit-image instead")
+    HAS_IMAGEJ = False
 
+if HAS_IMAGEJ:
+    import scyjava
+    # In megabytes
+    MAX_JVM_MEMORY = 12000
     # Increase JVM memory, 32-bit float images can be large...
-    scyjava.config.add_option("-Xmx12g")
+    scyjava.config.add_option(f"-Xmx{MAX_JVM_MEMORY}m")
     # Start ImageJ with maven endpoints for Fiji and SNT.
     # Headless since we won't display any Java-based UI components
-    ij = imagej.init(['sc.fiji:fiji', 'org.morphonets:SNT'], headless=True)
+    ij = imagej.init(['sc.fiji:fiji', 'org.morphonets:SNT:4.0.8'], headless=True)
     # Java classes can only be imported once the JVM starts
     SNTUtils = scyjava.jimport("sc.fiji.snt.SNTUtils")
     # This should be 4.0.8, but I get 4.0.3??
-    print("We are running SNT version " + str(SNTUtils.VERSION))  # Java string
+    logging.info("We are running SNT version " + str(SNTUtils.VERSION))  # Java string
     # Frangi, et al., 1998
     Frangi = scyjava.jimport("sc.fiji.snt.filter.Frangi")
     # Sato, et al., 1998
@@ -69,7 +78,7 @@ def threshold(im, func):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input-file", type=str, default=r"C:\Users\cameron.arshadi\Desktop\OP_1.tif")
+    parser.add_argument("-i", "--input-file", type=str, default=r"./chunk.tif")
     # parser.add_argument("-i", "--input-file", type=str, default=r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif")
     parser.add_argument("-g", "--output-groundtruth-file", type=str, default="./images/true_seg.tif")
     parser.add_argument("-d", "--output-image-dir", type=str, default="./images")
@@ -80,9 +89,8 @@ def main():
     parser.add_argument("-m", "--metrics", nargs="+", type=str, default=['are'])
 
     args = parser.parse_args(sys.argv[1:])
-
     print(args)
-    logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
+
     logging.getLogger().setLevel(args.log_level)
 
     if os.path.isdir(args.output_image_dir):
@@ -117,7 +125,7 @@ def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_par
 
     tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
 
-    if USE_IMAGEJ:
+    if HAS_IMAGEJ:
         # Nyquist
         scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
         print(f"scale step: {scale_step}")
@@ -157,7 +165,7 @@ def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_par
         logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
         logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-        if USE_IMAGEJ:
+        if HAS_IMAGEJ:
             start = timer()
             decoded = encode_decode(data, filters, compressor)
             response = filter_ij(decoded, Frangi(ij_sigmas, voxel_spacing, np.max(decoded), num_threads))
@@ -189,7 +197,7 @@ def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_par
     with open(seg_params_file, 'w') as f:
         json.dump(seg_params, f)
 
-    if USE_IMAGEJ:
+    if HAS_IMAGEJ:
         scyjava.shutdown_jvm()
 
 
