@@ -15,19 +15,20 @@ def read_params(param_file):
         return pd.DataFrame.from_dict(json.load(f), orient='index')
 
 
-def filter_df(df, args):
-    for key, val in args.items():
-        df = df[df[key] == val]
+def query_df(df, queries):
+    if queries is not None:
+        for q in queries:
+            df = df.query(q)
     return df
 
 
-def plot_segmentations(segdir, param_file, ground_truth, outfile='./seg_examples.png', sort_error=True, **kwargs):
+def plot_segmentations(segdir, param_file, ground_truth_file, df_queries=None, sort_error=True, outfile='./seg_examples.png'):
     # Filter segmentations by given keys
-    df = filter_df(read_params(param_file), kwargs)
+    df = query_df(read_params(param_file), df_queries)
     if sort_error:
         df = df.sort_values('adapted_rand_error')
 
-    true_seg = tifffile.imread(ground_truth)
+    true_seg = tifffile.imread(ground_truth_file)
 
     # Make a square-ish grid
     n = df.shape[0] + 1  # include the ground-truth image
@@ -66,13 +67,13 @@ def plot_segmentations(segdir, param_file, ground_truth, outfile='./seg_examples
     plt.show()
 
 
-def plot_skeletons(segdir, param_file, ground_truth, outfile='./skel_examples.png', sort_error=True, **kwargs):
+def plot_skeletons(segdir, param_file, ground_truth_file, df_queries=None, sort_error=True, outfile='./skel_examples.png'):
     # Filter segmentations by given keys
-    df = filter_df(read_params(param_file), kwargs)
+    df = query_df(read_params(param_file), df_queries)
     if sort_error:
         df = df.sort_values('adapted_rand_error')
 
-    true_seg = tifffile.imread(ground_truth)
+    true_seg = tifffile.imread(ground_truth_file)
 
     rows = df.shape[0] + 1  # include ground-truth
     cols = 2
@@ -94,14 +95,8 @@ def main():
     output_image_dir = "./images"
     seg_params_file = os.path.join(output_image_dir, "seg_params.json")
     ground_truth_file = './images/true_seg.tif'
-    plot_segmentations(output_image_dir,
-                       seg_params_file,
-                       ground_truth_file,
-                       # plot kwargs
-                       compressor_name='blosc-zstd',
-                       shuffle=0,
-                       level=1,
-                       )
+    queries = ['compressor_name == "blosc-zstd"', 'level == 1', 'shuffle == 0']
+    plot_skeletons(output_image_dir, seg_params_file, ground_truth_file, queries)
 
 
 if __name__ == "__main__":
