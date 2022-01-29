@@ -14,7 +14,7 @@ import skimage.filters
 import tifffile
 import zarr
 from skimage.filters.thresholding import threshold_mean
-from skimage.metrics import adapted_rand_error
+from skimage.metrics import adapted_rand_error, variation_of_information
 
 import compress_zarr
 
@@ -69,6 +69,8 @@ def compare_seg(true_seg, test_seg, metrics):
     m = dict()
     if "are" in metrics:
         m['adapted_rand_error'], m['prec'], m['rec'] = adapted_rand_error(true_seg, test_seg)
+    if "voi" in metrics:
+        m['splits'], m['merges'] = variation_of_information(true_seg, test_seg)
     return m
 
 
@@ -84,7 +86,7 @@ def main():
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c", "--codecs", nargs="+", type=str, default=["blosc"])
     parser.add_argument("-t", "--trunc-bits", nargs="+", type=int, default=[0, 2, 4])
-    parser.add_argument("-m", "--metrics", nargs="+", type=str, default=['are'])
+    parser.add_argument("-m", "--metrics", nargs="+", type=str, default=['are', 'voi'])  # ['are', 'voi']
 
     args = parser.parse_args(sys.argv[1:])
     print(args)
