@@ -79,9 +79,7 @@ def threshold(im, func):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input-file", type=str, default=r"./chunk.tif")
-    # parser.add_argument("-i", "--input-file", type=str, default=r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif")
-    parser.add_argument("-g", "--output-groundtruth-file", type=str, default="./images/true_seg.tif")
-    parser.add_argument("-d", "--output-image-dir", type=str, default="./images")
+    parser.add_argument("-d", "--output-image-dir", type=str, default="./images")  # Optional, will save a lot of images
     parser.add_argument("-o", "--output-metrics-file", type=str, default="./segmentation_metrics.csv")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c", "--codecs", nargs="+", type=str, default=["blosc"])
@@ -93,17 +91,15 @@ def main():
 
     logging.getLogger().setLevel(args.log_level)
 
-    if os.path.isdir(args.output_image_dir):
-        shutil.rmtree(args.output_image_dir)
-    os.mkdir(args.output_image_dir)
-
-    seg_params_file = os.path.join(args.output_image_dir, "seg_params.json")
+    if args.output_image_dir is not None:
+        if os.path.isdir(args.output_image_dir):
+            shutil.rmtree(args.output_image_dir)
+        os.mkdir(args.output_image_dir)
 
     chunk_factor = [1]
     compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits, chunk_factor)
 
-    run(args.input_file, compressors, args.output_groundtruth_file, args.output_image_dir, seg_params_file,
-        args.output_metrics_file, args.metrics)
+    run(args.input_file, compressors, args.output_image_dir, args.output_metrics_file, args.metrics)
 
 
 def parse_tiff_metadata(f):
@@ -115,7 +111,7 @@ def parse_tiff_metadata(f):
     return voxel_spacing, bytes_per_sample
 
 
-def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_params_file, output_metrics_file, metrics):
+def run(input_file, compressors, output_image_dir, output_metrics_file, metrics):
     with tifffile.TiffFile(input_file) as f:
         voxel_spacing, bytes_per_sample = parse_tiff_metadata(f)
         data = f.asarray()
@@ -123,27 +119,30 @@ def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_par
                      f" size {(np.product(data.shape) * bytes_per_sample) / (1024. * 1024)} MiB,"
                      f" voxel spacing {voxel_spacing}")
 
-    tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
+    if output_image_dir is not None:
+        tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
 
     if HAS_IMAGEJ:
-        # Nyquist
-        scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
-        print(f"scale step: {scale_step}")
-        # N scales takes N times as long
-        ij_sigmas = scale_step * np.arange(1, 5)
-        print("sigmas: " + str(ij_sigmas))
+        # # Nyquist
+        # scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
+        # print(f"scale step: {scale_step}")
+        # # N scales takes N times as long
+        # ij_sigmas = scale_step * np.arange(1, 5)
+        # print("sigmas: " + str(ij_sigmas))
         ij_sigmas = [1.0]
         num_threads = Runtime.getRuntime().availableProcessors()
         response = filter_ij(data, Frangi(ij_sigmas, voxel_spacing, np.max(data), num_threads))
     else:
         # Voxel size is ignored in scikit-image filters, use pixel units
-        py_sigmas = [2.0]
+        py_sigmas = [2.0]  # 4x half of min-separation in pixels
         response = skimage.filters.frangi(data, py_sigmas, black_ridges=False)
 
     threshold_func = threshold_mean
 
     true_seg = threshold(response, threshold_func)
-    tifffile.imwrite(ground_truth_outfile, true_seg)
+
+    if output_image_dir is not None:
+        tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
 
     all_metrics = []
 
@@ -182,11 +181,13 @@ def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_par
             seg_dur = end - start
             logging.info(f"seg time sklearn = {seg_dur}")
 
-        outfile = f"test_seg_{i}.tif"
-        tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
-
         seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
-        seg_params[outfile] = seg_metrics
+
+        if output_image_dir is not None:
+            outfile = f"test_seg_{i}.tif"
+            seg_params[outfile] = seg_metrics
+            tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
+
         all_metrics.append(seg_metrics)
 
     output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
@@ -194,8 +195,9 @@ def run(input_file, compressors, ground_truth_outfile, output_image_dir, seg_par
     df = pd.DataFrame.from_records(all_metrics)
     df.to_csv(output_metrics_file, index_label='test_number')
 
-    with open(seg_params_file, 'w') as f:
-        json.dump(seg_params, f)
+    if output_image_dir is not None:
+        with open(os.path.join(output_image_dir, "seg_params.json"), 'w') as f:
+            json.dump(seg_params, f)
 
     if HAS_IMAGEJ:
         scyjava.shutdown_jvm()

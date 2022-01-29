@@ -110,7 +110,7 @@ def plot_skeletons(segdir, param_file, ground_truth_file, df_queries=None, sort_
 def main():
     output_image_dir = "./images"
     seg_params_file = os.path.join(output_image_dir, "seg_params.json")
-    ground_truth_file = './images/true_seg.tif'
+    ground_truth_file = os.path.join(output_image_dir, 'true_seg.tif')
     queries = ['compressor_name == "blosc-zstd"', 'level == 1', 'shuffle == 0']
     plot_skeletons(output_image_dir, seg_params_file, ground_truth_file, queries)
 
