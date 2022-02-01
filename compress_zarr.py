@@ -1,3 +1,6 @@
+import json
+import shutil
+
 import h5py
 import random
 import math
@@ -161,8 +164,10 @@ def main():
     parser.add_argument("-n","--num-tiles", type=int, default=1)
     parser.add_argument("-r","--resolution", type=str, default="1")
     parser.add_argument("-s","--random-seed", type=int, default=None)
-    parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/2020-12-01-training-data/2020-12-01-stack-15/images/BrainSlice1_MMStack_Pos33_15_shift.tif")
-    parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test_file.zarr")
+    parser.add_argument("-i","--input-file", type=str, default=r"C:\Users\cameron.arshadi\Desktop\test_data.zarr")
+    parser.add_argument("-d","--output-data-file", type=str, default=r"C:\Users\cameron.arshadi\Desktop\test_file.zarr")
+    # Optional folder to save all compressed images along with parameters, currently only supports -num-tiles == 1
+    parser.add_argument("-f", "--output-data-folder", type=str, default="./compressed")
     parser.add_argument("-o","--output-metrics-file", type=str, default="./compression_metrics.csv")
     parser.add_argument("-l","--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c","--codecs", nargs="+", type=str, default=["blosc"])
@@ -186,7 +191,8 @@ def main():
         input_file=args.input_file,
         output_data_file=args.output_data_file,
         quality_metrics=args.metrics,
-        output_metrics_file=args.output_metrics_file)
+        output_metrics_file=args.output_metrics_file,
+        output_data_folder=args.output_data_folder)
 
 def read_dataset_chunk(dataset, key):
     logging.info(f"loading {key}")
@@ -255,7 +261,7 @@ def estimate_size(shape, bytes_per_pixel):
     """Array size in MiB"""
     return (np.product(shape) * bytes_per_pixel) / (1024. * 1024)
 
-def compress_write(data, compressor, filters, block_multiplier, quality_metrics, output_path):
+def compress_write(data, compressor, filters, block_multiplier, quality_metrics, output_path, output_data_file):
     chunk_shape, chunk_size = guess_chunk_shape(data, bytes_per_pixel=2, scale_factor=block_multiplier)
     psutil.cpu_percent(interval=None)
     start = timer()
@@ -288,6 +294,9 @@ def compress_write(data, compressor, filters, block_multiplier, quality_metrics,
         metrics = eval_quality(data, za[:], quality_metrics)
         out.update(metrics)
 
+    if output_data_file is not None:
+        tifffile.imwrite(output_data_file, za[:])
+
     return out
 
 def eval_quality(input_data, decoded_data, quality_metrics):
@@ -303,7 +312,8 @@ def eval_quality(input_data, decoded_data, quality_metrics):
                                                      data_range=decoded_data.max() - decoded_data.min())
     return qa
 
-def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, quality_metrics, output_metrics_file):
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, quality_metrics, output_metrics_file,
+        output_data_folder):
     if random_seed is not None:
         random.seed(random_seed)
 
@@ -311,8 +321,20 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
 
     total_tests = num_tiles * len(compressors)
 
+    if output_data_folder is not None:
+        if os.path.isdir(output_data_folder):
+            shutil.rmtree(output_data_folder)
+        os.mkdir(output_data_folder)
+
+    # Dictionary mapping compressed result image to its parameters
+    params = {}
+
     for ti in range(num_tiles):
         data, rslice, read_time = read_random_chunk(input_file, resolution)
+
+        # FIXME: handle multiple tiles?
+        if output_data_folder is not None:
+            tifffile.imwrite(os.path.join(output_data_folder, f"input_data.tif"), data)
 
         for c in compressors:
             compressor = c['compressor']
@@ -325,11 +347,19 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
             }
 
             tile_metrics.update(c['params'])
+            compressed_metrics = {}
+            compressed_metrics.update(tile_metrics)
 
             logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-            metrics = compress_write(data, compressor, filters, chunk_factor, quality_metrics, output_data_file)
+            compressed_filename = None
+            name = f"compressed_{len(all_metrics)+1}.tif"
+            if output_data_folder is not None:
+                compressed_filename = os.path.join(output_data_folder, name)
+
+            metrics = compress_write(data, compressor, filters, chunk_factor, quality_metrics, output_data_file,
+                                     compressed_filename)
 
             tile_metrics.update(metrics)
             tile_metrics['read_time'] = read_time
@@ -341,10 +371,16 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
 
             all_metrics.append(tile_metrics)
 
+            params[name] = tile_metrics
+
     output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
 
     df = pd.DataFrame.from_records(all_metrics)
     df.to_csv(output_metrics_file, index_label='test_number')
+
+    if output_data_folder is not None:
+        with open(os.path.join(output_data_folder, "params.json"), 'w') as f:
+            json.dump(params, f)
 
 if __name__ == "__main__": 
     main()
