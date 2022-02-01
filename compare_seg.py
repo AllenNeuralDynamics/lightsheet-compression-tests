@@ -81,7 +81,7 @@ def threshold(im, func):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input-file", type=str, default=r"./chunk.tif")
-    parser.add_argument("-d", "--output-image-dir", type=str, default="./images")  # Optional, will save a lot of images
+    parser.add_argument("-d", "--output-image-dir", type=str, default="./segmented")  # Optional, will save a lot of images
     parser.add_argument("-o", "--output-metrics-file", type=str, default="./segmentation_metrics.csv")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c", "--codecs", nargs="+", type=str, default=["blosc"])
@@ -181,7 +181,7 @@ def run(input_file, compressors, output_image_dir, output_metrics_file, metrics)
             test_seg = threshold(response, threshold_func)
             end = timer()
             seg_dur = end - start
-            logging.info(f"seg time sklearn = {seg_dur}")
+            logging.info(f"seg time scikit-image = {seg_dur}")
 
         seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
 
@@ -198,7 +198,7 @@ def run(input_file, compressors, output_image_dir, output_metrics_file, metrics)
     df.to_csv(output_metrics_file, index_label='test_number')
 
     if output_image_dir is not None:
-        with open(os.path.join(output_image_dir, "seg_params.json"), 'w') as f:
+        with open(os.path.join(output_image_dir, "params.json"), 'w') as f:
             json.dump(seg_params, f)
 
     if HAS_IMAGEJ:

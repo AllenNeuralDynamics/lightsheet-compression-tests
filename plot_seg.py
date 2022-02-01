@@ -22,97 +22,131 @@ def query_df(df, queries):
     return df
 
 
-def plot_segmentations(segdir, param_file, ground_truth_file, df_queries=None, sort_error=True, outfile='./seg_examples.png'):
-    # Filter segmentations by given keys
-    df = query_df(read_params(param_file), df_queries)
-    if sort_error:
-        df = df.sort_values('adapted_rand_error')
+def plot_parameters(imdir, param_file, reference_imfile, df_queries=None, annotate_keys=None, sort_key=None,
+                    max_project=True, outfile='./param_examples.png'):
+    """imdir may be a directory of compressed images or segmentations, all that's required
+    is a parameter json file mapping an image filename (basename) to its compression or segmentation parameters"""
+    # Filter images by given queries
+    param_df = query_df(read_params(param_file), df_queries)
+    if sort_key is not None:
+        param_df = param_df.sort_values(sort_key)
 
-    true_seg = tifffile.imread(ground_truth_file)
+    input_data = tifffile.imread(reference_imfile)
 
     # Make a square-ish grid
-    n = df.shape[0] + 1  # include the ground-truth image
+    n = param_df.shape[0] + 1  # include the ground-truth image
     rows = int(math.sqrt(n))
     cols = int(n / rows) + 1
-
-    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
-
-    # Try to evenly space parameter annotations on each image
-    label_step = 1.0 / len(df.columns)
-    fontsize = 8
+    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True, figsize=(18, 18))
 
     # MIP of ground-truth segmentation
-    axes.ravel()[0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
-    axes.ravel()[0].set_title(f"ground truth")
+    if max_project:
+        input_data = np.max(input_data, axis=0)
+    axes.ravel()[0].imshow(input_data, cmap='gray', aspect='auto')
+    axes.ravel()[0].set_title(f"input data")
     # Now plot the test segmentations
-    for i in range(df.shape[0]):
-        test_seg = tifffile.imread(os.path.join(segdir, df.index[i]))
+    for i in range(param_df.shape[0]):
+        test_data = tifffile.imread(os.path.join(imdir, param_df.index[i]))
         # MIP of test segmentation
-        axes.ravel()[i + 1].imshow(np.max(test_seg, axis=0), cmap='gray', aspect='auto')
+        if max_project:
+            test_data = np.max(test_data, axis=0)
+        axes.ravel()[i + 1].imshow(test_data, cmap='gray', aspect='auto')
         # Annotate compression parameters and accuracy metrics
-        for j, column in enumerate(df):
-            val = df[column].iloc[i]
+        filtered_keys = [k for k in annotate_keys if k in param_df]
+        df_keys = param_df[filtered_keys]
+        # Try to evenly space parameter annotations on each image
+        label_step = 1.0 / len(df_keys.columns)
+        fontsize = 10
+        for j, column in enumerate(df_keys):
+            val = df_keys[column].iloc[i]
             val = round(val, 4) if isinstance(val, numbers.Number) else val
             axes.ravel()[i + 1].annotate(
                 f"{column}={val}",
                 xy=(0, j * label_step),
-                color='red',
+                color='orange',
                 xycoords='axes fraction',
                 fontsize=fontsize
             )
     for ax in axes.ravel():
         ax.axis("off")
 
+    plt.tight_layout()
     plt.savefig(outfile, bbox_inches='tight', dpi=600)
     plt.show()
 
 
-def plot_skeletons(segdir, param_file, ground_truth_file, df_queries=None, sort_error=True, outfile='./skel_examples.png'):
+def plot_skeletons(imdir, param_file, reference_imfile, df_queries=None, annotate_keys=None, sort_key=None,
+                   max_project=True, outfile='./skel_examples.png'):
+    """imdir should be a directory of binary segmentations. They will be skeletonized
+    during plotting."""
     # Filter segmentations by given keys
-    df = query_df(read_params(param_file), df_queries)
-    if sort_error:
-        df = df.sort_values('adapted_rand_error')
+    param_df = query_df(read_params(param_file), df_queries)
+    if sort_key:
+        param_df = param_df.sort_values(sort_key)
 
-    true_seg = tifffile.imread(ground_truth_file)
+    true_seg = tifffile.imread(reference_imfile)
 
-    rows = df.shape[0] + 1  # include ground-truth
+    rows = param_df.shape[0] + 1  # include ground-truth
     cols = 2
-    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True)
-    # Try to evenly space parameter annotations on each image
-    label_step = 1.0 / len(df.columns)
-    fontsize = 8
+    fig, axes = plt.subplots(rows, cols, sharex=True, sharey=True, figsize=(18,18))
+
     # MIP of ground-truth segmentation
-    axes[0][0].imshow(np.max(true_seg, axis=0), cmap='gray', aspect='auto')
+    skel = skeletonize(true_seg)
+    if max_project:
+        true_seg = np.max(true_seg, axis=0)
+        skel = np.max(skel, axis=0)
+    axes[0][0].imshow(true_seg, cmap='gray', aspect='auto')
     axes[0][0].set_title(f"ground truth")
-    axes[0][1].imshow(np.max(skeletonize(true_seg), axis=0), cmap='gray', aspect='auto')
-    for i in range(df.shape[0]):
-        test_seg = tifffile.imread(os.path.join(segdir, df.index[i]))
-        axes[i + 1][0].imshow(np.max(test_seg, axis=0), cmap='gray', aspect='auto')
-        axes[i + 1][1].imshow(np.max(skeletonize(test_seg), axis=0), cmap='gray', aspect='auto')
+    axes[0][1].imshow(skel, cmap='gray', aspect='auto')
+    for i in range(param_df.shape[0]):
+        test_seg = tifffile.imread(os.path.join(imdir, param_df.index[i]))
+        skel = skeletonize(test_seg)
+        if max_project:
+            test_seg = np.max(test_seg, axis=0)
+            skel = np.max(skel, axis=0)
+        axes[i + 1][0].imshow(test_seg, cmap='gray', aspect='auto')
+        axes[i + 1][1].imshow(skel, cmap='gray', aspect='auto')
         # Annotate compression parameters and accuracy metrics
-        for j, column in enumerate(df):
-            val = df[column].iloc[i]
+        filtered_keys = [k for k in annotate_keys if k in param_df]
+        key_df = param_df[filtered_keys]
+        # Try to evenly space parameter annotations on each image
+        label_step = 1.0 / len(key_df.columns)
+        fontsize = 10
+        for j, column in enumerate(key_df):
+            val = param_df[column].iloc[i]
             val = round(val, 4) if isinstance(val, numbers.Number) else val
             axes[i + 1][0].annotate(
                 f"{column}={val}",
                 xy=(0, j * label_step),
-                color='red',
+                color='orange',
                 xycoords='axes fraction',
                 fontsize=fontsize
             )
     for ax in axes.ravel():
         ax.axis("off")
 
+    plt.tight_layout()
     plt.savefig(outfile, bbox_inches='tight', dpi=600)
     plt.show()
 
 
 def main():
-    output_image_dir = "./images"
-    seg_params_file = os.path.join(output_image_dir, "seg_params.json")
-    ground_truth_file = os.path.join(output_image_dir, 'true_seg.tif')
+    image_dir = "./segmented"
+    param_file = os.path.join(image_dir, "params.json")
+    ground_truth_file = os.path.join(image_dir, 'true_seg.tif')
+    # Queries to filter the params.json dataframe
     queries = ['compressor_name == "blosc-zstd"', 'level == 1', 'shuffle == 0']
-    plot_skeletons(output_image_dir, seg_params_file, ground_truth_file, queries)
+    with open(param_file, 'r') as f:
+        params = json.load(f)
+    print(next(iter(params.values())).keys())
+    # Keys to paint on each image.
+    # These depend on the compressor family chosen. Blosc does not have a 'rate' parameter, for example.
+    # The relevant keys will get filtered out based on those in the parameter json file.
+    annotate_keys = ['mse', 'ssim', 'psnr', 'rate', 'precision', 'tolerance', 'compressor_name', 'storage_ratio',
+                     'adapted_rand_error', 'prec', 'rec', 'level', 'trunc', 'shuffle']
+    plot_skeletons(image_dir, param_file, ground_truth_file, queries, annotate_keys, max_project=True,
+                    sort_key=None)
+
 
 if __name__ == "__main__":
     main()
