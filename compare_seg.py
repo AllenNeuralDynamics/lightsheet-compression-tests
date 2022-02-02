@@ -7,10 +7,10 @@ import sys
 from fractions import Fraction
 from timeit import default_timer as timer
 
+import imagej
 import numpy as np
 import pandas as pd
-import skimage
-import skimage.filters
+import scyjava
 import tifffile
 import zarr
 from skimage.filters.thresholding import threshold_mean
@@ -18,36 +18,17 @@ from skimage.metrics import adapted_rand_error, variation_of_information
 
 import compress_zarr
 
-logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
-logging.getLogger().setLevel(logging.INFO)
 
-try:
-    import imagej
-    logging.info("Found pyimagej")
-    HAS_IMAGEJ = True
-except ImportError:
-    logging.warning("pyimagej not found, using scikit-image instead")
-    HAS_IMAGEJ = False
-
-if HAS_IMAGEJ:
-    import scyjava
-    # In megabytes
-    MAX_JVM_MEMORY = 12000
-    # Increase JVM memory, 32-bit float images can be large...
-    scyjava.config.add_option(f"-Xmx{MAX_JVM_MEMORY}m")
-    # Start ImageJ with maven endpoints for Fiji and SNT.
-    # Headless since we won't display any Java-based UI components
-    ij = imagej.init(['sc.fiji:fiji', 'org.morphonets:SNT:4.0.8'], headless=True)
-    # Java classes can only be imported once the JVM starts
-    SNTUtils = scyjava.jimport("sc.fiji.snt.SNTUtils")
-    # This should be 4.0.8, but I get 4.0.3??
-    logging.info("We are running SNT version " + str(SNTUtils.VERSION))  # Java string
-    # Frangi, et al., 1998
-    Frangi = scyjava.jimport("sc.fiji.snt.filter.Frangi")
-    # Sato, et al., 1998
-    Tubeness = scyjava.jimport("sc.fiji.snt.filter.Tubeness")
-    FloatType = scyjava.jimport("net.imglib2.type.numeric.real.FloatType")
-    Runtime = scyjava.jimport("java.lang.Runtime")
+class ImageJWrapper:
+    def __init__(self, maven_endpoints, max_memory=None, headless=True):
+        if max_memory is not None:
+            scyjava.config.add_option(f"-Xmx{max_memory}m")
+        self.ij = imagej.init(maven_endpoints, headless)
+        self.sntutils_cls = scyjava.jimport("sc.fiji.snt.SNTUtils")
+        self.frangi_cls = scyjava.jimport("sc.fiji.snt.filter.Frangi")
+        self.tubeness_cls = scyjava.jimport("sc.fiji.snt.filter.Tubeness")
+        self.floattype_cls = scyjava.jimport("net.imglib2.type.numeric.real.FloatType")
+        self.runtime_cls = scyjava.jimport("java.lang.Runtime")
 
 
 def encode_decode(im, filters, compressor):
@@ -55,14 +36,14 @@ def encode_decode(im, filters, compressor):
     return za[:]
 
 
-def filter_ij(im, op):
+def filter_ij(im, op, ij_wrapper):
     # Convert numpy array to Java RandomAccessibleInterval
     # This automatically swaps axes from ZYX -> XYZ
-    java_in = ij.py.to_java(im)
-    java_out = ij.op().run("create.img", java_in, FloatType())
+    java_in = ij_wrapper.ij.py.to_java(im)
+    java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
     op.compute(java_in, java_out)
     # Back to numpy and ZYX order
-    return ij.py.from_java(java_out)
+    return ij_wrapper.ij.py.from_java(java_out)
 
 
 def compare_seg(true_seg, test_seg, metrics):
@@ -81,6 +62,12 @@ def threshold(im, func):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--input-file", type=str, default=r"./chunk.tif")
+    parser.add_argument("-f", "--filter", type=str, default='sato')  # 'frangi' or 'sato'
+    # Scales for ridge filters, these are multiplied by the Nyquist rate
+    # i.e., half the average voxel spacing of the input image
+    parser.add_argument("-s", "--scales", nargs="+", type=float, default=[2])
+    # Max memory for JVM in megabytes, i.e., -Xmx{max_memory}m
+    parser.add_argument("-x", "--max-memory", type=int, default=8000)
     parser.add_argument("-d", "--output-image-dir", type=str, default="./segmented")  # Optional, will save a lot of images
     parser.add_argument("-o", "--output-metrics-file", type=str, default="./segmentation_metrics.csv")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
@@ -91,6 +78,7 @@ def main():
     args = parser.parse_args(sys.argv[1:])
     print(args)
 
+    logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
     logging.getLogger().setLevel(args.log_level)
 
     if args.output_image_dir is not None:
@@ -101,7 +89,13 @@ def main():
     chunk_factor = [1]
     compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits, chunk_factor)
 
-    run(args.input_file, compressors, args.output_image_dir, args.output_metrics_file, args.metrics)
+    maven_endpoints = ['sc.fiji:fiji', 'org.morphonets:SNT:4.0.8']
+    ij_wrapper = ImageJWrapper(maven_endpoints, max_memory=args.max_memory, headless=True)
+    # This really should be 4.0.8, but I get 4.0.3??
+    logging.info("We are running SNT version " + str(ij_wrapper.sntutils_cls.VERSION))
+
+    run(args.input_file, ij_wrapper, args.filter, args.scales, compressors, args.output_image_dir, args.output_metrics_file,
+        args.metrics)
 
 
 def parse_tiff_metadata(f):
@@ -113,7 +107,7 @@ def parse_tiff_metadata(f):
     return voxel_spacing, bytes_per_sample
 
 
-def run(input_file, compressors, output_image_dir, output_metrics_file, metrics):
+def run(input_file, ij_wrapper, ridge_filter, scales, compressors, output_image_dir, output_metrics_file, metrics):
     with tifffile.TiffFile(input_file) as f:
         voxel_spacing, bytes_per_sample = parse_tiff_metadata(f)
         data = f.asarray()
@@ -124,24 +118,25 @@ def run(input_file, compressors, output_image_dir, output_metrics_file, metrics)
     if output_image_dir is not None:
         tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
 
-    if HAS_IMAGEJ:
-        # # Nyquist
-        # scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
-        # print(f"scale step: {scale_step}")
-        # # N scales takes N times as long
-        # ij_sigmas = scale_step * np.arange(1, 5)
-        # print("sigmas: " + str(ij_sigmas))
-        ij_sigmas = [1.0]
-        num_threads = Runtime.getRuntime().availableProcessors()
-        response = filter_ij(data, Frangi(ij_sigmas, voxel_spacing, np.max(data), num_threads))
+    # Nyquist
+    scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
+    print(f"scale step: {scale_step}")
+    # N scales takes N times as long
+    sigmas = scale_step * np.array(scales)
+    print("sigmas: " + str(sigmas))
+
+    num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
+
+    if ridge_filter == 'frangi':
+        op = ij_wrapper.frangi_cls(sigmas, voxel_spacing, np.max(data), num_threads)
+    elif ridge_filter == 'sato':
+        op = ij_wrapper.tubeness_cls(sigmas, voxel_spacing, num_threads)
     else:
-        # Voxel size is ignored in scikit-image filters, use pixel units
-        py_sigmas = [2.0]  # 4x half of min-separation in pixels
-        response = skimage.filters.frangi(data, py_sigmas, black_ridges=False)
+        raise ValueError("Unknown filter: " + ridge_filter)
 
-    threshold_func = threshold_mean
+    response = filter_ij(data, op, ij_wrapper)
 
-    true_seg = threshold(response, threshold_func)
+    true_seg = threshold(response, threshold_mean)
 
     if output_image_dir is not None:
         tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
@@ -166,22 +161,13 @@ def run(input_file, compressors, output_image_dir, output_metrics_file, metrics)
         logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
         logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-        if HAS_IMAGEJ:
-            start = timer()
-            decoded = encode_decode(data, filters, compressor)
-            response = filter_ij(decoded, Frangi(ij_sigmas, voxel_spacing, np.max(decoded), num_threads))
-            test_seg = threshold(response, threshold_func)
-            end = timer()
-            seg_dur = end - start
-            logging.info(f"seg time ij = {seg_dur}")
-        else:
-            start = timer()
-            response = skimage.filters.frangi(encode_decode(data, filters, compressor), sigmas=py_sigmas,
-                                              black_ridges=False)
-            test_seg = threshold(response, threshold_func)
-            end = timer()
-            seg_dur = end - start
-            logging.info(f"seg time scikit-image = {seg_dur}")
+        start = timer()
+        decoded = encode_decode(data, filters, compressor)
+        response = filter_ij(decoded, ij_wrapper.frangi_cls(sigmas, voxel_spacing, np.max(decoded), num_threads), ij_wrapper)
+        test_seg = threshold(response, threshold_mean)
+        end = timer()
+        seg_dur = end - start
+        logging.info(f"seg time ij = {seg_dur}")
 
         seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
 
@@ -201,8 +187,7 @@ def run(input_file, compressors, output_image_dir, output_metrics_file, metrics)
         with open(os.path.join(output_image_dir, "params.json"), 'w') as f:
             json.dump(seg_params, f)
 
-    if HAS_IMAGEJ:
-        scyjava.shutdown_jvm()
+    scyjava.shutdown_jvm()
 
 
 if __name__ == "__main__":
