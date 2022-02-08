@@ -22,7 +22,7 @@ def trunc_filter(bits):
 def blosc_compressor_lib(trunc_bits, chunk_factor):
     cnames = [ 'zstd', 'blosclz', 'lz4', 'lz4hc', 'zlib' ]#, 'snappy' ]
     shuffles = [ numcodecs.Blosc.SHUFFLE, numcodecs.Blosc.NOSHUFFLE ]
-    clevels = [ 1, 3, 5, 9 ]
+    clevels = [ 1, 3, 5, 7, 9 ]
 
     opts = []
     for cname, clevel, shuffle, tb, cf in itertools.product(cnames, clevels, shuffles, trunc_bits, chunk_factor):
@@ -41,7 +41,7 @@ def blosc_compressor_lib(trunc_bits, chunk_factor):
     return opts
 
 def lossless_compressor_lib(trunc_bits, chunk_factor):
-    clevels = [ 1, 3, 5, 9 ]
+    clevels = [ 1, 3, 5, 7, 9 ]
 
     opts = []
     for clevel, tb, cf in itertools.product(clevels, trunc_bits, chunk_factor):
