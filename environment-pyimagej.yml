@@ -1,0 +1,16 @@
+name: lightsheet-compression-tests
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.6, <3.9
+  - numpy
+  - zfpy
+  - zarr
+  - pandas
+  - h5py
+  - tifffile
+  - scikit-image
+  - pyimagej
+  - openjdk=8
+  - matplotlib
+  - psutil
