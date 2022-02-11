@@ -1,7 +1,7 @@
 import logging
 from timeit import default_timer as timer
 
-import bm3d
+# import bm3d
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -19,6 +19,7 @@ from skimage.restoration import (
     denoise_tv_chambolle,
     denoise_wavelet
 )
+import cv2 as cv
 
 import compress_zarr
 
@@ -26,10 +27,10 @@ try:
     import imagej
     import scyjava
 
-    IJ = imagej.init(['sc.fiji:fiji', 'com.github.thorstenwagner:ij-nl-means'], headless=False)
-    IJ.ui().showUI()
+    IMAGEJ = imagej.init(['sc.fiji:fiji', 'com.github.thorstenwagner:ij-nl-means'], headless=False)
+    IMAGEJ.ui().showUI()
 except ImportError:
-    IJ = None
+    IMAGEJ = None
 
 
 def identity(data):
@@ -40,17 +41,56 @@ def run_ij_plugin(arr, plugin, args):
     """Running external ImageJ plugins does not work headlessly,
     for debug use only."""
     # Set the active image in the Window Manager
-    IJ.ui().show(IJ.py.to_java(arr))
+    IMAGEJ.ui().show(IMAGEJ.py.to_java(arr))
     # Run plugin on the active image
-    IJ.py.run_plugin(plugin, args)
+    IMAGEJ.py.run_plugin(plugin, args)
     # Get active image
-    imp = IJ.py.active_image_plus()
+    imp = IMAGEJ.py.active_image_plus()
     # Convert to numpy ndarray
-    result = IJ.py.from_java(imp)
+    result = IMAGEJ.py.from_java(imp)
     # Hack to bypass the "Save image before closing?" prompt
     imp.changes = False
     imp.close()
     return result
+
+
+# I could not get this to work, always returns a zero image
+# def cv_tv(data):
+#     result = np.zeros_like(data)
+#     if data.ndim == 2:
+#         cv.denoise_TVL1([data], result)
+#     elif data.ndim == 3:
+#         for i in range(data.shape[0]):
+#             cv.denoise_TVL1([data[i]], result[i])
+#     else:
+#         raise ValueError
+#     return result
+
+
+def cv_bm3d(data):
+    result = np.zeros_like(data)
+    if data.ndim == 2:
+        cv2.xphoto.bm3dDenoising(data, result)
+    elif data.ndim == 3:
+        for i in range(data.shape[0]):
+            cv.xphoto.bm3dDenoising(data[i], result[i])
+    else:
+        raise ValueError
+    return result
+
+
+def cv_nl_means(data):
+    norm_type = cv.NORM_L1  # required for uint16
+    h = [3]  # controls amount of denoising
+    if data.ndim == 2:
+        return cv.fastNlMeansDenoising(data, h=[3], normType=norm_type)
+    elif data.ndim == 3:
+        slices = []
+        for s in data:
+            slices.append(cv.fastNlMeansDenoising(s, h=[3], normType=norm_type))
+        return np.array(slices)
+    else:
+        raise ValueError
 
 
 def ij_nl_means(data):
@@ -73,7 +113,7 @@ def ij_nl_means(data):
         return rescale(run_ij_plugin(data_copy, plugin, args))
 
 
-def nl_means(data):
+def skimage_nl_means(data):
     """This is way too slow"""
     sigma = np.mean(estimate_sigma(data))
     denoised = denoise_nl_means(data, h=0.8 * sigma, sigma=sigma, preserve_range=True)
@@ -100,20 +140,20 @@ def denoise_fft(data):
     return rescale_intensity(denoised, out_range=(0, 2 ** 16 - 1)).astype(np.uint16)
 
 
-def denoise_bm3d(data):
-    """This is way too slow"""
-    psd = 1
-    if data.ndim == 2:
-        return rescale(bm3d.bm3d(data, psd))
-    else:
-        slices = []
-        for s in data:
-            slices.append(bm3d.bm3d(s, psd))
-        return rescale(np.array(slices))
+# def denoise_bm3d(data):
+#     """This is way too slow"""
+#     psd = 1
+#     if data.ndim == 2:
+#         return rescale(bm3d.bm3d(data, psd))
+#     else:
+#         slices = []
+#         for s in data:
+#             slices.append(bm3d.bm3d(s, psd))
+#         return rescale(np.array(slices))
 
 
 def bilateral(data):
-    sigma_spatial = 0.8
+    sigma_spatial = 1
     if data.ndim == 2:
         return rescale(denoise_bilateral(data, sigma_spatial=sigma_spatial))
     else:
@@ -149,15 +189,15 @@ def rescale(data):
 
 def get_funcs():
     return {
-        'identity': identity,
-        'median': median,
-        'nl_means': ij_nl_means,
-        'bilateral': bilateral,
-        # 'bm3d': denoise_bm3d,
+        # 'identity': identity,
+        # 'median': median,
+        # 'nl_means': cv_nl_means,  # Best performance with openCV
+        # 'bilateral': bilateral,
+        'bm3d': cv_bm3d,
         # 'fft': denoise_fft,
         # 'tv_bregman': tv_bregman,
-        'tv_chambolle': tv_chambolle,
-        'wavelet': wavelet
+        # 'tv_chambolle': cv_tv,
+        # 'wavelet': wavelet
     }
 
 
@@ -190,6 +230,7 @@ def plot(metrics_file, compressor, shuffle):
     axes[1].set_xticks(df['level'].unique().tolist())
     axes[1].grid(axis='y')
 
+    plt.legend()
     plt.suptitle(compressor + f", shuffle {shuffle}")
 
 
@@ -280,10 +321,13 @@ def plot_filters(data):
 
 
 if __name__ == "__main__":
-    # test_chunk_file = r"C:\Users\cameron.arshadi\Desktop\repos\lightsheet-compression-tests\chunk.tif"
-    # test_chunk = tifffile.imread(test_chunk_file)
+    test_chunk_file = r"C:\Users\cameron.arshadi\Desktop\repos\lightsheet-compression-tests\chunk.tif"
+    test_chunk = tifffile.imread(test_chunk_file)
     # plot_filters(test_chunk)
-    # test_filter(test_chunk, ij_nl_means)
-    main()
-    if IJ is not None:
+    test_filter(test_chunk, cv_bm3d)
+    # main()
+    # plot(r"C:\Users\cameron.arshadi\Desktop\repos\lightsheet-compression-tests\median-test-metrics.csv", 'blosc-zstd', 1)
+    # plt.show()
+    if IMAGEJ is not None:
+        IMAGEJ.getContext().dispose()
         scyjava.shutdown_jvm()
