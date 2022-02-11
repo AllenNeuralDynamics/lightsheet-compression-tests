@@ -66,11 +66,12 @@ def run_ij_plugin(arr, plugin, args):
 #         raise ValueError
 #     return result
 
-
+# only available in non-free extension
+# I was unable to compile it so this remains untested
 def cv_bm3d(data):
     result = np.zeros_like(data)
     if data.ndim == 2:
-        cv2.xphoto.bm3dDenoising(data, result)
+        cv.xphoto.bm3dDenoising(data, result)
     elif data.ndim == 3:
         for i in range(data.shape[0]):
             cv.xphoto.bm3dDenoising(data[i], result[i])
