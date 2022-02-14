@@ -94,6 +94,14 @@ def cv_nl_means(data):
         raise ValueError
 
 
+RectangleShape = scyjava.jimport("net.imglib2.algorithm.neighborhood.RectangleShape")
+def ij_median(data):
+    src = IMAGEJ.op().transform().flatIterableView(IMAGEJ.py.to_java(data))
+    dst = IMAGEJ.op().run('create.img', src)
+    shape = RectangleShape(1, False)
+    return IMAGEJ.py.from_java(IMAGEJ.op().filter().median(dst,src,shape))
+
+
 def ij_nl_means(data):
     """IJ.py.to_java() returns a Java view of the numpy array.
     It does not allocate new memory, so make a copy to avoid overwriting the input image."""
@@ -190,11 +198,11 @@ def rescale(data):
 
 def get_funcs():
     return {
-        # 'identity': identity,
-        # 'median': median,
+        'identity': identity,
+        'median': ij_median,
         # 'nl_means': cv_nl_means,  # Best performance with openCV
         # 'bilateral': bilateral,
-        'bm3d': cv_bm3d,
+        # 'bm3d': cv_bm3d,
         # 'fft': denoise_fft,
         # 'tv_bregman': tv_bregman,
         # 'tv_chambolle': cv_tv,
@@ -302,7 +310,7 @@ def main():
     input_file = r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif"
     output_data_file = "./test_file.zarr"
     output_metrics_file = "./median-test-metrics.csv"
-    num_tiles = 1
+    num_tiles = 10
 
     run(input_file, num_tiles, output_data_file, output_metrics_file)
 
@@ -325,10 +333,8 @@ if __name__ == "__main__":
     test_chunk_file = r"C:\Users\cameron.arshadi\Desktop\repos\lightsheet-compression-tests\chunk.tif"
     test_chunk = tifffile.imread(test_chunk_file)
     # plot_filters(test_chunk)
-    test_filter(test_chunk, cv_bm3d)
-    # main()
-    # plot(r"C:\Users\cameron.arshadi\Desktop\repos\lightsheet-compression-tests\median-test-metrics.csv", 'blosc-zstd', 1)
-    # plt.show()
+    # test_filter(test_chunk, ij_median)
+    main()
     if IMAGEJ is not None:
         IMAGEJ.getContext().dispose()
         scyjava.shutdown_jvm()
