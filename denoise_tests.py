@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import psutil
+import skimage
 import tifffile
 import zarr
 from scipy import fftpack
@@ -54,17 +55,19 @@ def run_ij_plugin(arr, plugin, args):
     return result
 
 
-# I could not get this to work, always returns a zero image
-# def cv_tv(data):
-#     result = np.zeros_like(data)
-#     if data.ndim == 2:
-#         cv.denoise_TVL1([data], result)
-#     elif data.ndim == 3:
-#         for i in range(data.shape[0]):
-#             cv.denoise_TVL1([data[i]], result[i])
-#     else:
-#         raise ValueError
-#     return result
+# This only works with 8-bit images
+def cv_tv(data):
+    data = skimage.img_as_ubyte(data)
+    result = np.zeros_like(data)
+    if data.ndim == 2:
+        cv.denoise_TVL1([data], result)
+    elif data.ndim == 3:
+        for i in range(data.shape[0]):
+            cv.denoise_TVL1([data[i]], result[i])
+    else:
+        raise ValueError
+    return result
+
 
 # only available in non-free extension
 # I was unable to compile it so this remains untested
