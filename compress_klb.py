@@ -13,10 +13,9 @@ import pyklb
 import compress_zarr
 
 
-def build_compressors():
+def build_compressors(threads):
     # We only have 2 choices
     codecs = ["bzip2", "zlib"]
-    threads = [1, 2, 4, 8]
     opts = []
     for c, t in itertools.product(codecs, threads):
         opts.append({
@@ -35,6 +34,7 @@ def main():
     parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test_file.klb")
     parser.add_argument("-o", "--output-metrics-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/klb-compression-metrics.csv")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
+    parser.add_argument("-t", "--threads", type=int, nargs="+", default=[1])
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -43,7 +43,7 @@ def main():
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
     logging.getLogger().setLevel(args.log_level)
 
-    compressors = build_compressors()
+    compressors = build_compressors(args.threads)
 
     run(compressors=compressors,
         input_file=args.input_file,
