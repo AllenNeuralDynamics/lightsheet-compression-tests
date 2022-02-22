@@ -1,0 +1,21 @@
+name: lct
+channels:
+  - conda-forge
+dependencies:
+  - h5py
+  - matplotlib
+  - numpy
+  - opencv
+  - openjdk=8
+  - pandas
+  - pip
+  - psutil
+  - pyimagej
+  - python=3.7
+  - scikit-image
+  - scipy
+  - tifffile
+  - zarr
+  - zfpy
+  - pip:
+    - bm3d
