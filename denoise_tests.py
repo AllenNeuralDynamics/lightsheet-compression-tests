@@ -91,11 +91,11 @@ def cv_bm3d(data):
 def cv_nl_means(data, h):
     norm_type = cv.NORM_L1  # required for uint16
     if data.ndim == 2:
-        return cv.fastNlMeansDenoising(data, h=[3], normType=norm_type)
+        return cv.fastNlMeansDenoising(data, h=h, normType=norm_type)
     elif data.ndim == 3:
         slices = []
         for s in data:
-            slices.append(cv.fastNlMeansDenoising(s, h=[3], normType=norm_type))
+            slices.append(cv.fastNlMeansDenoising(s, h=h, normType=norm_type))
         return np.array(slices)
     else:
         raise ValueError
