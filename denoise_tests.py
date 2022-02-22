@@ -1,7 +1,11 @@
+import argparse
 import logging
+import os
+import sys
 from timeit import default_timer as timer
 
-# import bm3d
+import cv2 as cv
+import bm3d
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -11,23 +15,20 @@ import tifffile
 import zarr
 from scipy import fftpack
 from skimage.exposure import rescale_intensity
-from skimage.filters.rank import median
 from skimage.restoration import (
     estimate_sigma,
     denoise_nl_means,
     denoise_bilateral,
-    denoise_tv_bregman,
     denoise_tv_chambolle,
     denoise_wavelet
 )
-import cv2 as cv
 
 import compress_zarr
 
 try:
     import imagej
     import scyjava
-
+    # initialize Fiji with the external non-local means plugin
     IMAGEJ = imagej.init(['sc.fiji:fiji', 'com.github.thorstenwagner:ij-nl-means'], headless=False)
     IMAGEJ.ui().showUI()
 except ImportError:
@@ -55,6 +56,7 @@ def run_ij_plugin(arr, plugin, args):
     return result
 
 
+# OpenCV Total variation denoising
 # This only works with 8-bit images
 def cv_tv(data):
     data = skimage.img_as_ubyte(data)
@@ -69,7 +71,8 @@ def cv_tv(data):
     return result
 
 
-# only available in non-free extension
+# OpenCV Block-matching and 3D filtering
+# Only available in non-free extension
 # I was unable to compile it so this remains untested
 def cv_bm3d(data):
     result = np.zeros_like(data)
@@ -83,9 +86,10 @@ def cv_bm3d(data):
     return result
 
 
-def cv_nl_means(data):
+# OpenCV non-local means denoising
+# Much faster than the scikit-image version
+def cv_nl_means(data, h):
     norm_type = cv.NORM_L1  # required for uint16
-    h = [3]  # controls amount of denoising
     if data.ndim == 2:
         return cv.fastNlMeansDenoising(data, h=[3], normType=norm_type)
     elif data.ndim == 3:
@@ -97,14 +101,15 @@ def cv_nl_means(data):
         raise ValueError
 
 
+# ImageJ N-D median filter
 RectangleShape = scyjava.jimport("net.imglib2.algorithm.neighborhood.RectangleShape")
-def ij_median(data):
+def ij_median(data, shape):
     src = IMAGEJ.op().transform().flatIterableView(IMAGEJ.py.to_java(data))
     dst = IMAGEJ.op().run('create.img', src)
-    shape = RectangleShape(1, False)
-    return IMAGEJ.py.from_java(IMAGEJ.op().filter().median(dst,src,shape))
+    return IMAGEJ.py.from_java(IMAGEJ.op().filter().median(dst, src, shape))
 
 
+# ImageJ non-local means denoising
 def ij_nl_means(data):
     """IJ.py.to_java() returns a Java view of the numpy array.
     It does not allocate new memory, so make a copy to avoid overwriting the input image."""
@@ -120,17 +125,21 @@ def ij_nl_means(data):
         for s in data_copy:
             result = run_ij_plugin(s, plugin, args)
             slices.append(result)
-        return rescale(np.array(slices))
+        return np.array(slices)
+    elif data_copy.ndim == 2:
+        return run_ij_plugin(data_copy, plugin, args)
     else:
-        return rescale(run_ij_plugin(data_copy, plugin, args))
+        raise ValueError
 
 
+# Scikit-image non-local means denoising
+# Much slower than OpenCV and ImageJ implementations
 def skimage_nl_means(data):
     """This is way too slow"""
     sigma = np.mean(estimate_sigma(data))
     denoised = denoise_nl_means(data, h=0.8 * sigma, sigma=sigma, preserve_range=True)
     # cast back to uint16
-    return np.clip(denoised, 0, 2 ** 16 - 1).astype(np.uint16)
+    return denoised
 
 
 def denoise_fft(data):
@@ -149,77 +158,194 @@ def denoise_fft(data):
     im_fft[:, :, int(c * keep_fraction):int(c * (1 - keep_fraction))] = 0
     denoised = fftpack.ifftn(im_fft).real
     # not sure if this makes sense
-    return rescale_intensity(denoised, out_range=(0, 2 ** 16 - 1)).astype(np.uint16)
+    return denoised
 
 
-# def denoise_bm3d(data):
-#     """This is way too slow"""
-#     psd = 1
-#     if data.ndim == 2:
-#         return rescale(bm3d.bm3d(data, psd))
-#     else:
-#         slices = []
-#         for s in data:
-#             slices.append(bm3d.bm3d(s, psd))
-#         return rescale(np.array(slices))
-
-
-def bilateral(data):
-    sigma_spatial = 1
+# Python wrapper around Block-Matching and 3D filtering pypi project
+# This is remarkably slow with the default parameters
+# https://pypi.org/project/bm3d/
+def denoise_bm3d(data, sigma_psd):
+    """This is way too slow"""
     if data.ndim == 2:
-        return rescale(denoise_bilateral(data, sigma_spatial=sigma_spatial))
-    else:
+        return bm3d.bm3d(data, sigma_psd)
+    elif data.ndim == 3:
         slices = []
         for s in data:
-            slices.append(denoise_bilateral(s, sigma_spatial=sigma_spatial))
-        return rescale(np.array(slices))
+            slices.append(bm3d.bm3d(s, sigma_psd))
+        return np.array(slices)
+    else:
+        raise ValueError
 
 
+# Scikit-image bilateral filter
+def bilateral(data, sigma_spatial, sigma_color):
+    if data.ndim == 2:
+        return denoise_bilateral(data, sigma_spatial=sigma_spatial, sigma_color=sigma_color)
+    elif data.ndim == 3:
+        slices = []
+        for s in data:
+            slices.append(denoise_bilateral(s, sigma_spatial=sigma_spatial, sigma_color=sigma_color))
+        return np.array(slices)
+    else:
+        raise ValueError
+
+
+# I believe this version is designed for 2D or multichannel images
 # def tv_bregman(data):
-#     return rescale(denoise_tv_bregman(data))
+#     return denoise_tv_bregman(data)
 
 
-def tv_chambolle(data):
+# Scikit-image total variation denoising for N-D images
+def tv_chambolle(data, weight):
     # Use a larger weight for more denoising
-    weight = 0.001
-    return rescale(denoise_tv_chambolle(data, weight))
+    return denoise_tv_chambolle(data, weight)
 
 
-def wavelet(data):
+# Scikit-image wavelet denoising
+def wavelet(data, sigma):
     if data.ndim == 2:
-        return rescale(denoise_wavelet(data))
-    else:
+        return denoise_wavelet(data, sigma=sigma)
+    elif data.ndim == 3:
         slices = []
         for s in data:
-            slices.append(denoise_wavelet(s))
-        return rescale(np.array(slices))
+            slices.append(denoise_wavelet(s, sigma=sigma))
+        return np.array(slices)
+    else:
+        raise ValueError
 
 
-def rescale(data):
-    return rescale_intensity(data, out_range=(0, 2 ** 16 - 1)).astype(np.uint16)
+def rescale(data, dmin, dmax):
+    return rescale_intensity(data, out_range=(dmin, dmax)).astype(np.uint16)
 
 
-def get_funcs():
-    return {
-        'identity': identity,
-        'median': ij_median,
-        # 'nl_means': cv_nl_means,  # Best performance with openCV
-        # 'bilateral': bilateral,
-        # 'bm3d': cv_bm3d,
-        # 'fft': denoise_fft,
-        # 'tv_bregman': tv_bregman,
-        # 'tv_chambolle': cv_tv,
-        # 'wavelet': wavelet
-    }
+class FilterConfig:
+    def __init__(self, name, func, args):
+        self.name = name
+        self.func = func
+        self.args = args
 
 
-def test_filter(data, func):
-    denoised = func(data)
-    tifffile.imwrite("./noisy-input.tif", data)
-    tifffile.imwrite("./denoised.tif", denoised)
+def get_filters():
+    filters = [
+        FilterConfig('no filter', identity, dict()),
+        FilterConfig('median-imagej', ij_median, dict(shape=RectangleShape(1, False))),
+        FilterConfig('nl-means-cv', cv_nl_means, dict(h=[3])),
+        FilterConfig('tv-chambolle', tv_chambolle, dict(weight=0.001)),
+        FilterConfig('bilateral', bilateral, dict(sigma_spatial=1, sigma_color=None)),
+        FilterConfig('wavelet', wavelet, dict(sigma=None)),
+        # FilterConfig('bm3d', denoise_bm3d, dict(sigma_psd=1.0)),
+    ]
+    return filters
 
 
-def plot(metrics_file, compressor, shuffle):
+def test_filters(data, filters, outdir):
+    if not os.path.isdir(outdir):
+        os.mkdir(outdir)
+    tifffile.imwrite(os.path.join(outdir, "noisy-input.tif"), data)
+    for f in filters:
+        denoised = f.func(data, **f.args)
+        tifffile.imwrite(os.path.join(outdir, f"{f.name}.tif"), denoised)
+
+
+def run(input_file, num_tiles, output_data_file, output_metrics_file):
+    filters = get_filters()
+    compressors = compress_zarr.build_compressors("blosc", [0], [0])
+    all_metrics = []
+
+    total_tests = num_tiles * len(filters) * len(compressors)
+
+    for i in range(num_tiles):
+        data, rslice, read_time = compress_zarr.read_random_chunk(input_file, 1)
+        dmin = data.min()
+        dmax = data.max()
+        logging.info(f"loaded data with shape {data.shape}, size {data.nbytes / 2 ** 20} MiB, min {dmin}, max {dmax}")
+        for f in filters:
+            for c in compressors:
+                compressor = c['compressor']
+
+                tile_metrics = {
+                    "compressor_name": c['name'],
+                    "tile": rslice
+                }
+                tile_metrics.update(c['params'])
+
+                logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
+
+                psutil.cpu_percent(interval=None)
+                start = timer()
+                # include filter step in compression time
+                filtered = rescale(f.func(data, **f.args), dmin, dmax)
+                ds = zarr.DirectoryStore(output_data_file)
+                za = zarr.array(filtered, compressor=compressor, store=ds, overwrite=True)
+                logging.info(str(za.info))
+                cpu_utilization = psutil.cpu_percent(interval=None)
+                end = timer()
+                compress_dur = end - start
+
+                storage_ratio = za.nbytes / za.nbytes_stored
+                compress_bps = data.nbytes / compress_dur
+
+                logging.info(f"compression time = {compress_dur}, "
+                             f"bps = {compress_bps}, "
+                             f"storage ratio = {storage_ratio}, "
+                             f"cpu percent = {cpu_utilization}%")
+
+                tile_metrics.update({
+                    'name': c['name'],
+                    'bytes_read': za.nbytes,
+                    'compress_time': compress_dur,
+                    'bytes_written': za.nbytes_stored,
+                    'shape': data.shape,
+                    'cpu_utilization': cpu_utilization,
+                    'storage_ratio': storage_ratio,
+                    'compress_bps': compress_bps,
+                    'filter': f.name
+                })
+
+                all_metrics.append(tile_metrics)
+
+    df = pd.DataFrame.from_records(all_metrics)
+    df.to_csv(output_metrics_file, index_label='test_number')
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--input-file", type=str,
+                        default=r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif")
+    parser.add_argument('-n', "--num-tiles", type=int, default=1)
+    parser.add_argument('-d', '--output-data-file', type=str, default='./denoise-test.zarr')
+    parser.add_argument('-o', '--output-metrics-file', type=str, default='./denoise-metrics.csv')
+    parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
+
+    args = parser.parse_args(sys.argv[1:])
+    print(args)
+
+    logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
+    logging.getLogger().setLevel(args.log_level)
+
+    run(args.input_file, args.num_tiles, args.output_data_file, args.output_metrics_file)
+
+    plot_speed(args.output_metrics_file, compressor="blosc-zstd", shuffle=1)
+    plt.legend()
+    plt.show()
+
+
+def plot_mips(data, filters, cols=3, outfile=None):
+    """plot maximum intensity projections of each filter configuration"""
+    total = len(filters)
+    rows = total // cols
+    rows += total % cols
+    fig, ax = plt.subplots(rows, cols)
+    for i, f in enumerate(filters):
+        denoised = np.max(f.func(data, **f.args), axis=0)
+        ax.ravel()[i].imshow(denoised, vmin=np.percentile(denoised, 0.1), vmax=np.percentile(denoised, 99.9))
+        ax.ravel()[i].set_title(f.name)
+        ax.ravel()[i].axis('off')
+    if outfile is not None:
+        plt.savefig(outfile, dpi=300)
+
+
+def plot_speed(metrics_file, compressor, shuffle, outfile=None):
     df = pd.read_csv(metrics_file, index_col='test_number')
     df = df[df['compressor_name'] == compressor]
     df = df[df['shuffle'] == shuffle]
@@ -244,99 +370,15 @@ def plot(metrics_file, compressor, shuffle):
 
     plt.legend()
     plt.suptitle(compressor + f", shuffle {shuffle}")
-
-
-def run(input_file, num_tiles, output_data_file, output_metrics_file):
-    funcs = get_funcs()
-    compressors = compress_zarr.build_compressors("blosc", [0], [0])
-    all_metrics = []
-
-    total_tests = num_tiles * len(funcs) * len(compressors)
-
-    for i in range(num_tiles):
-        data, rslice, read_time = compress_zarr.read_random_chunk(input_file, 1)
-        # data = tifffile.imread("./chunk.tif")
-        # rslice = 0
-        # read_time = 1
-        print(f"loaded data with shape {data.shape}, {data.nbytes / 2 ** 20} MiB")
-
-        for f in funcs:
-            for c in compressors:
-                compressor = c['compressor']
-
-                tile_metrics = {
-                    "compressor_name": c['name'],
-                    "tile": rslice
-                }
-                tile_metrics.update(c['params'])
-
-                print(f"starting test {len(all_metrics) + 1}/{total_tests}")
-
-                psutil.cpu_percent(interval=None)
-                start = timer()
-                # include filter step in compression time
-                filtered = funcs[f](data)
-                ds = zarr.DirectoryStore(output_data_file)
-                za = zarr.array(filtered, compressor=compressor, store=ds, overwrite=True)
-                logging.info(str(za.info))
-                cpu_utilization = psutil.cpu_percent(interval=None)
-                end = timer()
-                compress_dur = end - start
-
-                storage_ratio = za.nbytes / za.nbytes_stored
-                compress_bps = data.nbytes / compress_dur
-
-                print(f"compression time = {compress_dur}, "
-                      f"bps = {compress_bps}, "
-                      f"ratio = {storage_ratio}, "
-                      f"cpu = {cpu_utilization}%")
-
-                tile_metrics.update({
-                    'name': c['name'],
-                    'bytes_read': za.nbytes,
-                    'compress_time': compress_dur,
-                    'bytes_written': za.nbytes_stored,
-                    'shape': data.shape,
-                    'cpu_utilization': cpu_utilization,
-                    'storage_ratio': storage_ratio,
-                    'compress_bps': compress_bps,
-                    'filter': f
-                })
-
-                all_metrics.append(tile_metrics)
-
-    df = pd.DataFrame.from_records(all_metrics)
-    df.to_csv(output_metrics_file, index_label='test_number')
-
-
-def main():
-    input_file = r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif"
-    output_data_file = "./test_file.zarr"
-    output_metrics_file = "./median-test-metrics.csv"
-    num_tiles = 10
-
-    run(input_file, num_tiles, output_data_file, output_metrics_file)
-
-    plot(output_metrics_file, compressor="blosc-zstd", shuffle=1)
-    plt.legend()
-    plt.show()
-
-
-def plot_filters(data):
-    funcs = get_funcs()
-    fig, ax = plt.subplots(2, 3)
-    for i, name in enumerate(funcs):
-        denoised = np.max(funcs[name](data), axis=0)
-        ax.ravel()[i].imshow(denoised, vmin=np.percentile(denoised, 0.1), vmax=np.percentile(denoised, 99.9))
-        ax.ravel()[i].set_title(name)
-    plt.show()
+    if outfile is not None:
+        plt.savefig(outfile, dpi=300)
 
 
 if __name__ == "__main__":
     test_chunk_file = r"C:\Users\cameron.arshadi\Desktop\repos\lightsheet-compression-tests\chunk.tif"
     test_chunk = tifffile.imread(test_chunk_file)
-    # plot_filters(test_chunk)
-    # test_filter(test_chunk, ij_median)
+    plot_mips(test_chunk, get_filters())
+    test_filters(test_chunk, get_filters(), "./denoised")
     main()
     if IMAGEJ is not None:
         IMAGEJ.getContext().dispose()
