@@ -3,6 +3,7 @@ import random
 import math
 import zarr
 import numcodecs
+from numcodecs import blosc
 import argparse
 import os
 import sys
@@ -19,13 +20,13 @@ def trunc_filter(bits):
     scale = 1.0 / (2 ** bits)
     return [] if bits == 0 else [ numcodecs.fixedscaleoffset.FixedScaleOffset(offset=0, scale=scale, dtype=np.uint16) ]
 
-def blosc_compressor_lib(trunc_bits, chunk_factor):
+def blosc_compressor_lib(trunc_bits, chunk_factor, threads):
     cnames = [ 'zstd', 'blosclz', 'lz4', 'lz4hc', 'zlib' ]#, 'snappy' ]
     shuffles = [ numcodecs.Blosc.SHUFFLE, numcodecs.Blosc.NOSHUFFLE ]
     clevels = [ 1, 3, 5, 9 ]
 
     opts = []
-    for cname, clevel, shuffle, tb, cf in itertools.product(cnames, clevels, shuffles, trunc_bits, chunk_factor):
+    for cname, clevel, shuffle, tb, cf, th in itertools.product(cnames, clevels, shuffles, trunc_bits, chunk_factor, threads):
         opts.append({
             'name': f'blosc-{cname}',
             'compressor': numcodecs.Blosc(cname=cname, clevel=clevel, shuffle=shuffle),
@@ -34,7 +35,8 @@ def blosc_compressor_lib(trunc_bits, chunk_factor):
                 'shuffle': shuffle,
                 'level': clevel,
                 'trunc': tb,
-                "chunk_factor": cf
+                "chunk_factor": cf,
+                "threads": th
             }
         })
 
@@ -145,12 +147,12 @@ def lossy_compressor_lib(trunc_bits, chunk_factor):
 
     return compressors
 
-def build_compressors(codecs, trunc_bits, chunk_factor):
+def build_compressors(codecs, trunc_bits, chunk_factor, blosc_threads):
     compressors = []
     if 'other-lossless' in codecs:
         compressors += lossless_compressor_lib(trunc_bits, chunk_factor)
     if 'blosc' in codecs:
-        compressors += blosc_compressor_lib(trunc_bits, chunk_factor)
+        compressors += blosc_compressor_lib(trunc_bits, chunk_factor, blosc_threads)
     if 'lossy' in codecs:
         compressors += lossy_compressor_lib(trunc_bits, chunk_factor)
 
@@ -169,6 +171,7 @@ def main():
     parser.add_argument("-t","--trunc-bits", nargs="+", type=int, default=[0,2,4])
     parser.add_argument("-b", "--block-scale-factor", nargs="+", type=int, default=[1])
     parser.add_argument("-m", "--metrics", nargs="+", type=str, default=[])  # [mse, ssim, psnr]
+    parser.add_argument("-x", "--blosc-threads", nargs="+", type=int, default=[8])
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -177,7 +180,7 @@ def main():
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
     logging.getLogger().setLevel(args.log_level)
     
-    compressors = build_compressors(args.codecs, args.trunc_bits, args.block_scale_factor)
+    compressors = build_compressors(args.codecs, args.trunc_bits, args.block_scale_factor, args.blosc_threads)
 
     run(compressors=compressors,
         num_tiles=args.num_tiles,
@@ -328,6 +331,11 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
 
             logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
+
+            if "blosc" in c['name']:
+                blosc.use_threads = True
+                blosc.set_nthreads(c['params']['threads'])
+                tile_metrics['threads'] = blosc.get_nthreads()
 
             metrics = compress_write(data, compressor, filters, chunk_factor, quality_metrics, output_data_file)
 
