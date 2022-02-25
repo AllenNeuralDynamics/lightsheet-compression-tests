@@ -2,6 +2,7 @@ name: lct
 channels:
   - conda-forge
 dependencies:
+  - glymur
   - h5py
   - matplotlib
   - numpy
