@@ -5,4 +5,5 @@ numpy
 h5py
 tifffile
 scikit-image
+scikit-learn
 matplotlib
