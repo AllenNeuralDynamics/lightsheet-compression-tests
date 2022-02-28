@@ -22,7 +22,7 @@ def trunc_filter(bits):
 def blosc_compressor_lib(trunc_bits, chunk_factor):
     cnames = [ 'zstd', 'blosclz', 'lz4', 'lz4hc', 'zlib' ]#, 'snappy' ]
     shuffles = [ numcodecs.Blosc.SHUFFLE, numcodecs.Blosc.NOSHUFFLE ]
-    clevels = [ 1, 3, 5, 9 ]
+    clevels = [ 1, 3, 5, 7, 9 ]
 
     opts = []
     for cname, clevel, shuffle, tb, cf in itertools.product(cnames, clevels, shuffles, trunc_bits, chunk_factor):
@@ -41,12 +41,12 @@ def blosc_compressor_lib(trunc_bits, chunk_factor):
     return opts
 
 def lossless_compressor_lib(trunc_bits, chunk_factor):
-    clevels = [ 1, 3, 5, 9 ]
+    clevels = [ 1, 3, 5, 7, 9 ]
 
     opts = []
     for clevel, tb, cf in itertools.product(clevels, trunc_bits, chunk_factor):
         opts.append({
-            'name': 'zlib',
+            'name': 'lossless-zlib',
             'compressor': numcodecs.zlib.Zlib(level=clevel),
             'filters': trunc_filter(tb),
             'params': {
@@ -57,7 +57,7 @@ def lossless_compressor_lib(trunc_bits, chunk_factor):
         })
 
         opts.append({
-            'name': 'gzip',
+            'name': 'lossless-gzip',
             'compressor': numcodecs.gzip.GZip(level=clevel),
             'filters': trunc_filter(tb),
             'params': {
@@ -68,7 +68,7 @@ def lossless_compressor_lib(trunc_bits, chunk_factor):
         })
 
         opts.append({
-            'name': 'bz2',
+            'name': 'lossless-bz2',
             'compressor': numcodecs.bz2.BZ2(level=clevel),
             'filters': trunc_filter(tb),
             'params': {
@@ -79,7 +79,7 @@ def lossless_compressor_lib(trunc_bits, chunk_factor):
         })
 
         opts.append({
-            'name': 'lzma',
+            'name': 'lossless-lzma',
             'compressor': numcodecs.lzma.LZMA(preset=clevel),
             'filters': trunc_filter(tb),
             'params': {
