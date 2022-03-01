@@ -30,6 +30,9 @@ def main():
     parser.add_argument("-n", "--num-tiles", type=int, default=10)
     parser.add_argument("-r", "--resolution", type=str, default="1")
     parser.add_argument("-s", "--random-seed", type=int, default=42)
+    # Since JPEG2000 is a still-image codec, we can only compress and store a single plane per .jp2 file.
+    # For this reason, only reading from Tiffs is currently supported.
+    # There has been some effort towards a 3D JPEG codec for Zarr, see https://github.com/d-v-b/zarr-jpeg
     parser.add_argument("-i", "--input-file", type=str,
                         default=r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif")
     parser.add_argument("-d", "--output-data-file", type=str, default="./test_file_jp2.jp2")
@@ -72,7 +75,6 @@ def run(compressors, input_file, num_tiles, resolution, random_seed, output_data
 
         for c in compressors:
             logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
-            # logging.info(f"compressor: {c['name']}")
 
             psutil.cpu_percent(interval=None)
             start = timer()
