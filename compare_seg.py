@@ -61,13 +61,16 @@ def threshold(im, func):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-i", "--input-file", type=str, default=r"./chunk.tif")
+    parser.add_argument("-n", "--num-tiles", type=int, default=1)
+    parser.add_argument("-i", "--input-file", type=str, default=r"Y:\allen\scratch\aindtemp\data\anatomy\exm-hemi-brain.zarr")
+    parser.add_argument("-r","--resolution", type=str, default="2")
+    parser.add_argument("-s","--random-seed", type=int, default=42)
     parser.add_argument("-f", "--filter", type=str, default='sato')  # 'frangi' or 'sato'
     # Scales for ridge filters, these are multiplied by the Nyquist rate
     # i.e., half the average voxel spacing of the input image
-    parser.add_argument("-s", "--scales", nargs="+", type=float, default=[2])
+    parser.add_argument("-g", "--scales", nargs="+", type=float, default=[2])
     # Max memory for JVM in megabytes, i.e., -Xmx{max_memory}m
-    parser.add_argument("-x", "--max-memory", type=int, default=8000)
+    parser.add_argument("-x", "--max-memory", type=int, default=12000)
     parser.add_argument("-d", "--output-image-dir", type=str, default="./segmented")  # Optional, will save a lot of images
     parser.add_argument("-o", "--output-metrics-file", type=str, default="./segmentation_metrics.csv")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
@@ -86,7 +89,7 @@ def main():
             shutil.rmtree(args.output_image_dir)
         os.mkdir(args.output_image_dir)
 
-    chunk_factor = [1]
+    chunk_factor = [4]
     compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits, chunk_factor)
 
     maven_endpoints = ['sc.fiji:fiji', 'org.morphonets:SNT:4.0.8']
@@ -94,8 +97,18 @@ def main():
     # This really should be 4.0.8, but I get 4.0.3??
     logging.info("We are running SNT version " + str(ij_wrapper.sntutils_cls.VERSION))
 
-    run(args.input_file, ij_wrapper, args.filter, args.scales, compressors, args.output_image_dir, args.output_metrics_file,
-        args.metrics)
+    run(
+        args.num_tiles,
+        args.resolution,
+        args.input_file,
+        ij_wrapper,
+        args.filter,
+        args.scales,
+        compressors,
+        args.output_image_dir,
+        args.output_metrics_file,
+        args.metrics
+    )
 
 
 def parse_tiff_metadata(f):
@@ -107,76 +120,82 @@ def parse_tiff_metadata(f):
     return voxel_spacing, bytes_per_sample
 
 
-def run(input_file, ij_wrapper, ridge_filter, scales, compressors, output_image_dir, output_metrics_file, metrics):
-    with tifffile.TiffFile(input_file) as f:
-        voxel_spacing, bytes_per_sample = parse_tiff_metadata(f)
-        data = f.asarray()
-        logging.info(f"loading volume, shape {data.shape},"
-                     f" size {(np.product(data.shape) * bytes_per_sample) / (1024. * 1024)} MiB,"
-                     f" voxel spacing {voxel_spacing}")
+def run(num_tiles, resolution, input_file, ij_wrapper, ridge_filter, scales, compressors, output_image_dir, output_metrics_file, metrics):
+    # with tifffile.TiffFile(input_file) as f:
+    #     voxel_spacing, bytes_per_sample = parse_tiff_metadata(f)
+    #     data = f.asarray()
+    #     logging.info(f"loading volume, shape {data.shape},"
+    #                  f" size {(np.product(data.shape) * bytes_per_sample) / (1024. * 1024)} MiB,"
+    #                  f" voxel spacing {voxel_spacing}")
 
-    if output_image_dir is not None:
-        tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
+    voxel_spacing = [1.0, 1.0, 1.0]
 
-    # Nyquist
-    scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
-    print(f"scale step: {scale_step}")
-    # N scales takes N times as long
-    sigmas = scale_step * np.array(scales)
-    print("sigmas: " + str(sigmas))
-
-    num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
-
-    if ridge_filter == 'frangi':
-        op = ij_wrapper.frangi_cls(sigmas, voxel_spacing, np.max(data), num_threads)
-    elif ridge_filter == 'sato':
-        op = ij_wrapper.tubeness_cls(sigmas, voxel_spacing, num_threads)
-    else:
-        raise ValueError("Unknown filter: " + ridge_filter)
-
-    response = filter_ij(data, op, ij_wrapper)
-
-    true_seg = threshold(response, threshold_mean)
-
-    if output_image_dir is not None:
-        tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
-
-    all_metrics = []
-
-    total_tests = len(compressors)
-
-    # Dictionary mapping segmentation result image to its parameters
-    seg_params = {}
-
-    for i, c in enumerate(compressors):
-        compressor = c['compressor']
-        filters = c['filters']
-
-        seg_metrics = {
-            'compressor_name': c['name'],
-        }
-
-        seg_metrics.update(c['params'])
-
-        logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
-        logging.info(f"compressor: {c['name']} params: {c['params']}")
-
-        start = timer()
-        decoded = encode_decode(data, filters, compressor)
-        response = filter_ij(decoded, ij_wrapper.frangi_cls(sigmas, voxel_spacing, np.max(decoded), num_threads), ij_wrapper)
-        test_seg = threshold(response, threshold_mean)
-        end = timer()
-        seg_dur = end - start
-        logging.info(f"seg time ij = {seg_dur}")
-
-        seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
+    for ti in range(num_tiles):
+        data, rslice, read_time = compress_zarr.read_random_chunk(input_file, resolution)
+        print(data.shape, data.nbytes)
 
         if output_image_dir is not None:
-            outfile = f"test_seg_{i}.tif"
-            seg_params[outfile] = seg_metrics
-            tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
+            tifffile.imwrite(os.path.join(output_image_dir, 'input_data.tif'), data)
 
-        all_metrics.append(seg_metrics)
+        # Nyquist
+        scale_step = sum(voxel_spacing) / (2 * len(voxel_spacing))
+        print(f"scale step: {scale_step}")
+        # N scales takes N times as long
+        sigmas = scale_step * np.array(scales)
+        print("sigmas: " + str(sigmas))
+
+        num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
+
+        if ridge_filter == 'frangi':
+            op = ij_wrapper.frangi_cls(sigmas, voxel_spacing, np.max(data), num_threads)
+        elif ridge_filter == 'sato':
+            op = ij_wrapper.tubeness_cls(sigmas, voxel_spacing, num_threads)
+        else:
+            raise ValueError("Unknown filter: " + ridge_filter)
+
+        response = filter_ij(data, op, ij_wrapper)
+
+        true_seg = threshold(response, threshold_mean)
+
+        if output_image_dir is not None:
+            tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
+
+        all_metrics = []
+
+        total_tests = len(compressors)
+
+        # Dictionary mapping segmentation result image to its parameters
+        seg_params = {}
+
+        for i, c in enumerate(compressors):
+            compressor = c['compressor']
+            filters = c['filters']
+
+            seg_metrics = {
+                'compressor_name': c['name'],
+            }
+
+            seg_metrics.update(c['params'])
+
+            logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
+            logging.info(f"compressor: {c['name']} params: {c['params']}")
+
+            start = timer()
+            decoded = encode_decode(data, filters, compressor)
+            response = filter_ij(decoded, ij_wrapper.frangi_cls(sigmas, voxel_spacing, np.max(decoded), num_threads), ij_wrapper)
+            test_seg = threshold(response, threshold_mean)
+            end = timer()
+            seg_dur = end - start
+            logging.info(f"seg time ij = {seg_dur}")
+
+            seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
+
+            if output_image_dir is not None:
+                outfile = f"test_seg_{i}.tif"
+                seg_params[outfile] = seg_metrics
+                tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
+
+            all_metrics.append(seg_metrics)
 
     output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
 
