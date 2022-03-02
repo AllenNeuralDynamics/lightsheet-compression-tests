@@ -153,6 +153,18 @@ def build_compressors(codecs, trunc_bits, chunk_factor):
         compressors += blosc_compressor_lib(trunc_bits, chunk_factor)
     if 'lossy' in codecs:
         compressors += lossy_compressor_lib(trunc_bits, chunk_factor)
+    # Test truncation without compression
+    if 'none' in codecs:
+        for tb in trunc_bits:
+            compressors += [{
+                'name': 'none',
+                'compressor': None,
+                'filters': trunc_filter(tb),
+                'params': {
+                    'trunc': tb,
+                    'chunk_factor': 4
+                }
+            }]
 
     return compressors
 
