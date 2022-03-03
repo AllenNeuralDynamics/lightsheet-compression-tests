@@ -14,7 +14,9 @@ import pandas as pd
 import scyjava
 import tifffile
 import zarr
+import scipy.ndimage as ndi
 from skimage.filters.thresholding import threshold_mean, threshold_otsu
+from skimage.measure import label
 from skimage.metrics import adapted_rand_error, variation_of_information
 
 import compress_zarr
@@ -207,8 +209,8 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             raise ValueError("Unknown filter: " + ridge_filter)
 
         response = filter_ij(data, op, ij_wrapper)
-
-        true_seg = threshold(response, threshold_otsu)
+        binary = threshold(response, threshold_otsu)
+        true_seg, _ = ndi.label(binary, structure=np.ones(shape=(3,3,3), dtype=bool))
 
         if output_image_dir is not None:
             tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
@@ -235,7 +237,8 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             else:
                 raise ValueError("Unknown filter: " + ridge_filter)
             response = filter_ij(decoded, op, ij_wrapper)
-            test_seg = threshold(response, threshold_otsu)
+            binary = threshold(response, threshold_otsu)
+            test_seg, _ = ndi.label(binary, structure=np.ones(shape=(3,3,3), dtype=bool))
             end = timer()
             seg_dur = end - start
             logging.info(f"seg time ij = {seg_dur}")
