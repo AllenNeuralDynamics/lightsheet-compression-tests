@@ -1,11 +1,14 @@
 import argparse
+import itertools
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import sys
 from fractions import Fraction
 import random
+from itertools import repeat
 from timeit import default_timer as timer
 
 import imagej
@@ -135,19 +138,20 @@ def get_downsample_factors(input_file, tile, resolution):
     return z[f"{tile}/resolutions"][resolution]
 
 
-def chunk_array(za, target_size, bytes_per_sample, discard_singletons=True):
+def lazy_chunks(arr_shape, block_shape, discard_singletons=True):
+    assert all(block_shape[i] <= arr_shape[i] for i in range(len(arr_shape)))
     chunks = []
-    block_shape = list(za.shape)
-    block_size = za.nbytes
-    while block_size > target_size:
-        block_shape[np.argmax(block_shape)] //= 2
-        block_size = np.product(block_shape) * bytes_per_sample
-    for z in range(0, za.shape[0], block_shape[0]):
-        zint = [z, min(z + block_shape[0], za.shape[0])]
-        for y in range(0, za.shape[1], block_shape[1]):
-            yint = [y, min(y + block_shape[1], za.shape[1])]
-            for x in range(0, za.shape[2], block_shape[2]):
-                xint = [x, min(x + block_shape[2], za.shape[2])]
+    # block_shape = list(za.shape)
+    # block_size = za.nbytes
+    # while block_size > target_size:
+    #     block_shape[np.argmax(block_shape)] //= 2
+    #     block_size = np.product(block_shape) * bytes_per_sample
+    for z in range(0, arr_shape[0], block_shape[0]):
+        zint = [z, min(z + block_shape[0], arr_shape[0])]
+        for y in range(0, arr_shape[1], block_shape[1]):
+            yint = [y, min(y + block_shape[1], arr_shape[1])]
+            for x in range(0, arr_shape[2], block_shape[2]):
+                xint = [x, min(x + block_shape[2], arr_shape[2])]
                 interval = np.vstack([zint, yint, xint])
                 chunks.append(interval)
     if discard_singletons:
@@ -161,6 +165,41 @@ def chunk_array(za, target_size, bytes_per_sample, discard_singletons=True):
     return chunks
 
 
+def chunk_list(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+
+def best_chunks(chunks, tiff_path):
+    num_workers = multiprocessing.cpu_count()
+    arrs = list(chunk_list(chunks, num_workers))
+    args = list(zip(arrs, repeat(tiff_path)))
+    start = timer()
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        results = list(itertools.chain(*pool.starmap(worker, args)))
+    end = timer()
+    logging.info(f"finding chunks took {end-start}s")
+    return results
+
+
+def worker(chunks, tiff_path):
+    with tifffile.TiffFile(tiff_path) as f:
+        z = zarr.open(f.aszarr(), 'r')
+        sums = []
+        for i, c in enumerate(chunks):
+            print(f"{i}/{len(chunks)}")
+            data = z[c[0][0]:c[0][1], c[1][0]:c[1][1], c[2][0]:c[2][1]]
+            sums.append(data.sum())
+        avgs = np.mean(sums)
+        std = np.std(sums)
+        best_chunks = []
+        for i, s in enumerate(sums):
+            if s >= avgs + 1 * std:
+                best_chunks.append(chunks[i])
+    return best_chunks
+
+
 def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
         output_metrics_file, metrics):
 
@@ -171,20 +210,29 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
     # Dictionary mapping segmentation result image to its parameters
     seg_params = {}
 
+    if input_file.endswith('.tif'):
+        with tifffile.TiffFile(input_file) as f:
+            # override user voxel size
+            voxel_size, bytes_per_sample = parse_tiff_metadata(f)
+            za = zarr.open(f.aszarr(), 'r')
+        if not os.path.isfile("./best_chunks.npy"):
+            chunks = best_chunks(lazy_chunks(za.shape, (64, 512, 512)), input_file)
+            np.save("./best_chunks.npy", chunks)
+        else:
+            chunks = np.load("./best_chunks.npy", allow_pickle=True)
+        logging.info(f"# chunks = {len(chunks)}")
+        assert len(chunks) >= num_tiles
+
     for ti in range(num_tiles):
         if input_file.endswith('.h5') or input_file.endswith(".zarr"):
             data, rslice, read_time = compress_zarr.read_random_chunk(input_file, resolution)
             res_voxel_size = np.array(voxel_size) * get_downsample_factors(input_file, rslice, int(resolution))
         elif input_file.endswith('.tif'):
+            c = random.choice(chunks)
             with tifffile.TiffFile(input_file) as f:
-                # This works with the 4 or so Tiffs that I tested
-                _, bytes_per_sample = parse_tiff_metadata(f)
                 za = zarr.open(f.aszarr(), 'r')
-                chunk_size = 60e6
-                chunks = chunk_array(za, chunk_size, bytes_per_sample)
-                c = random.choice(chunks)
                 data = za[c[0][0]:c[0][1], c[1][0]:c[1][1], c[2][0]:c[2][1]]
-                logging.info(f"loaded data with shape {data.shape}")
+            logging.info(f"loaded data with shape {data.shape}")
             res_voxel_size = np.array(voxel_size)
 
         logging.info(f"voxel spacing={res_voxel_size}")
