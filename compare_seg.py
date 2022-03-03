@@ -145,38 +145,37 @@ def get_downsample_factors(input_file, tile, resolution):
         raise ValueError("Unsupported file format " + os.path.splitext(input_file)[1])
 
 
-def lazy_chunks(arr_shape, block_shape, discard_singletons=False):
+def lazy_blocks(arr_shape, block_shape, discard_singletons=False):
+    """Partition an array with shape arr_shape into blocks with shape block_shape.
+    If arr_shape is not wholly divisible by block_shape,
+    some blocks will have the remainder as a dimension length."""
     assert all(block_shape[i] <= arr_shape[i] for i in range(len(arr_shape)))
-    chunks = []
+    blocks = []
     for z in range(0, arr_shape[0], block_shape[0]):
         zint = [z, min(z + block_shape[0], arr_shape[0])]
         for y in range(0, arr_shape[1], block_shape[1]):
             yint = [y, min(y + block_shape[1], arr_shape[1])]
             for x in range(0, arr_shape[2], block_shape[2]):
                 xint = [x, min(x + block_shape[2], arr_shape[2])]
-                interval = np.vstack([zint, yint, xint])
-                chunks.append(interval)
+                blocks.append(np.vstack([zint, yint, xint]))
     if discard_singletons:
-        filtered_chunks = []
-        for c in chunks:
-            shape = c[:, 1] - c[:, 0]
-            if all(shape > 1):
-                filtered_chunks.append(c)
-        assert len(filtered_chunks) > 0
-        return filtered_chunks
-    return chunks
+        # make sure all chunks are truly 3D
+        blocks = [c for c in blocks if np.all(c[:, 1] - c[:, 0] > 1)]
+    return blocks
 
 
-def chunk_list(lst, n):
+def split_list(lst, n):
     """Yield successive n-sized chunks from lst."""
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
 
 
-def best_chunks(chunks, tiff_path):
+def get_best_chunks(chunks, tiff_path, nstd=1):
+    """Find the chunks with summed intensity at least nstd standard
+    deviations above the mean sum."""
     num_workers = multiprocessing.cpu_count()
-    arrs = list(chunk_list(chunks, num_workers))
-    args = list(zip(arrs, repeat(tiff_path)))
+    arrs = list(split_list(chunks, num_workers))
+    args = list(zip(arrs, repeat(tiff_path), repeat(nstd)))
     start = timer()
     with multiprocessing.Pool(processes=num_workers) as pool:
         results = list(itertools.chain(*pool.starmap(best_chunks_worker, args)))
@@ -185,7 +184,7 @@ def best_chunks(chunks, tiff_path):
     return results
 
 
-def best_chunks_worker(chunks, tiff_path):
+def best_chunks_worker(chunks, tiff_path, nstd):
     with tifffile.TiffFile(tiff_path) as f:
         z = zarr.open(f.aszarr(), 'r')
         sums = []
@@ -197,16 +196,21 @@ def best_chunks_worker(chunks, tiff_path):
         std = np.std(sums)
         best_chunks = []
         for i, s in enumerate(sums):
-            if s >= avgs + 1 * std:
+            if s >= avgs + nstd * std:
                 best_chunks.append(chunks[i])
     return best_chunks
 
 
 def get_tiff_chunks(input_file, chunk_shape, discard_singletons=False):
+    # we only need the array shape, not the data
+    return lazy_blocks(get_tiff_shape(input_file), chunk_shape, discard_singletons)
+
+
+def get_tiff_shape(input_file):
+    # get the shape without loading any image data
     with tifffile.TiffFile(input_file) as f:
         za = zarr.open(f.aszarr(), 'r')
-        # we only need the array shape, not the data
-        return lazy_chunks(za.shape, chunk_shape, discard_singletons)
+        return za.shape
 
 
 def erode_border(a):
@@ -233,7 +237,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
     if input_file.endswith('.tif'):
         chunks = get_tiff_chunks(input_file, (64, 512, 512), discard_singletons=True)
         logging.info(f"# chunks = {len(chunks)}")
-        chunks = best_chunks(chunks, input_file)
+        chunks = get_best_chunks(chunks, input_file)
         logging.info(f"# chunks after filtering = {len(chunks)}")
         assert len(chunks) >= num_tiles
 
