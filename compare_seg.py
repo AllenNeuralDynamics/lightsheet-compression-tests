@@ -11,6 +11,7 @@ import random
 from itertools import repeat
 from timeit import default_timer as timer
 
+import h5py
 import imagej
 import numpy as np
 import pandas as pd
@@ -134,8 +135,14 @@ def parse_tiff_metadata(f):
 
 
 def get_downsample_factors(input_file, tile, resolution):
-    z = zarr.open(input_file, 'r')
-    return z[f"{tile}/resolutions"][resolution]
+    if input_file.endswith(".zarr"):
+        z = zarr.open(input_file, 'r')
+        return z[f"{tile}/resolutions"][resolution]
+    elif input_file.endswith(".h5"):
+        with h5py.File(input_file) as f:
+            return f[f"{tile}/resolutions"][resolution]
+    else:
+        raise ValueError("Unsupported file format " + os.path.splitext(input_file)[1])
 
 
 def lazy_chunks(arr_shape, block_shape, discard_singletons=False):
