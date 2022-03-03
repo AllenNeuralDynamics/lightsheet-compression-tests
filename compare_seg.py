@@ -71,7 +71,7 @@ def main():
     parser.add_argument("-i", "--input-file", type=str, default=r"C:\Users\cameron.arshadi\Downloads\BrainSlice1_MMStack_Pos33_15_shift.tif")
     parser.add_argument("-r", "--resolution", type=str, default="2")
     # Order should be XYZ
-    parser.add_argument("-v", "--voxel-size", nargs="+", type=float, default=[0.255, 0.255, 0.9999])
+    parser.add_argument("-v", "--voxel-size", nargs="+", type=float, default=[1.0, 1.0, 1.0])
     parser.add_argument("-s", "--random-seed", type=int, default=42)
     parser.add_argument("-f", "--filter", type=str, default='sato')  # 'frangi' or 'sato'
     # Scales for ridge filters, these are multiplied by the Nyquist rate
@@ -238,6 +238,8 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             c = random.choice(chunks)
             with tifffile.TiffFile(input_file) as f:
                 za = zarr.open(f.aszarr(), 'r')
+                # override user voxel size from tiff metadata
+                voxel_size, _ = parse_tiff_metadata(f)
                 data = za[c[0][0]:c[0][1], c[1][0]:c[1][1], c[2][0]:c[2][1]]
             logging.info(f"loaded data with shape {data.shape}")
             res_voxel_size = np.array(voxel_size)
