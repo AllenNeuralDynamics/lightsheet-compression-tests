@@ -202,6 +202,17 @@ def get_tiff_chunks(input_file, chunk_shape, discard_singletons=False):
         return lazy_chunks(za.shape, chunk_shape, discard_singletons)
 
 
+def erode_border(a):
+    # Set all 6 faces of a 3D array to zero
+    a[0, :, :] = 0
+    a[a.shape[0] - 1, :, :] = 0
+    a[:, :, 0] = 0
+    a[:, :, a.shape[2] - 1] = 0
+    a[:, 0, :] = 0
+    a[:, a.shape[1] - 1, :] = 0
+    return a
+
+
 def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
         output_metrics_file, metrics):
 
@@ -254,7 +265,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
 
         response = filter_ij(data, op, ij_wrapper)
         binary = threshold(response, threshold_otsu)
-        true_seg, _ = ndi.label(binary, structure=np.ones(shape=(3,3,3), dtype=bool))
+        true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool))
 
         if output_image_dir is not None:
             tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
@@ -282,7 +293,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
                 raise ValueError("Unknown filter: " + ridge_filter)
             response = filter_ij(decoded, op, ij_wrapper)
             binary = threshold(response, threshold_otsu)
-            test_seg, _ = ndi.label(binary, structure=np.ones(shape=(3,3,3), dtype=bool))
+            test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool))
             end = timer()
             seg_dur = end - start
             logging.info(f"seg time ij = {seg_dur}")
