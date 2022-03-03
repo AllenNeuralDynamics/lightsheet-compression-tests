@@ -246,7 +246,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             data, rslice, read_time = compress_zarr.read_random_chunk(input_file, resolution)
             res_voxel_size = np.array(voxel_size) * get_downsample_factors(input_file, rslice, int(resolution))
         elif input_file.endswith('.tif'):
-            c = random.choice(chunks)
+            c = chunks.pop(random.randint(0, len(chunks)))
             with tifffile.TiffFile(input_file) as f:
                 za = zarr.open(f.aszarr(), 'r')
                 # override user voxel size from tiff metadata
