@@ -172,18 +172,18 @@ def best_chunks(chunks, tiff_path):
     args = list(zip(arrs, repeat(tiff_path)))
     start = timer()
     with multiprocessing.Pool(processes=num_workers) as pool:
-        results = list(itertools.chain(*pool.starmap(worker, args)))
+        results = list(itertools.chain(*pool.starmap(best_chunks_worker, args)))
     end = timer()
     logging.info(f"finding chunks took {end-start}s")
     return results
 
 
-def worker(chunks, tiff_path):
+def best_chunks_worker(chunks, tiff_path):
     with tifffile.TiffFile(tiff_path) as f:
         z = zarr.open(f.aszarr(), 'r')
         sums = []
         for i, c in enumerate(chunks):
-            print(f"{i}/{len(chunks)}")
+            # print(f"{i}/{len(chunks)}")
             data = z[c[0][0]:c[0][1], c[1][0]:c[1][1], c[2][0]:c[2][1]]
             sums.append(data.sum())
         avgs = np.mean(sums)
@@ -193,6 +193,13 @@ def worker(chunks, tiff_path):
             if s >= avgs + 1 * std:
                 best_chunks.append(chunks[i])
     return best_chunks
+
+
+def get_tiff_chunks(input_file, chunk_shape, discard_singletons=False):
+    with tifffile.TiffFile(input_file) as f:
+        za = zarr.open(f.aszarr(), 'r')
+        # we only need the array shape, not the data
+        return lazy_chunks(za.shape, chunk_shape, discard_singletons)
 
 
 def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
@@ -206,16 +213,10 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
     seg_params = {}
 
     if input_file.endswith('.tif'):
-        with tifffile.TiffFile(input_file) as f:
-            # override user voxel size
-            voxel_size, bytes_per_sample = parse_tiff_metadata(f)
-            za = zarr.open(f.aszarr(), 'r')
-        if not os.path.isfile("./best_chunks.npy"):
-            chunks = best_chunks(lazy_chunks(za.shape, (64, 512, 512)), input_file)
-            np.save("./best_chunks.npy", chunks)
-        else:
-            chunks = np.load("./best_chunks.npy", allow_pickle=True)
+        chunks = get_tiff_chunks(input_file, (64, 512, 512), discard_singletons=True)
         logging.info(f"# chunks = {len(chunks)}")
+        chunks = best_chunks(chunks, input_file)
+        logging.info(f"# chunks after filtering = {len(chunks)}")
         assert len(chunks) >= num_tiles
 
     for ti in range(num_tiles):
