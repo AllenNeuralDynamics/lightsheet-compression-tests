@@ -138,14 +138,9 @@ def get_downsample_factors(input_file, tile, resolution):
     return z[f"{tile}/resolutions"][resolution]
 
 
-def lazy_chunks(arr_shape, block_shape, discard_singletons=True):
+def lazy_chunks(arr_shape, block_shape, discard_singletons=False):
     assert all(block_shape[i] <= arr_shape[i] for i in range(len(arr_shape)))
     chunks = []
-    # block_shape = list(za.shape)
-    # block_size = za.nbytes
-    # while block_size > target_size:
-    #     block_shape[np.argmax(block_shape)] //= 2
-    #     block_size = np.product(block_shape) * bytes_per_sample
     for z in range(0, arr_shape[0], block_shape[0]):
         zint = [z, min(z + block_shape[0], arr_shape[0])]
         for y in range(0, arr_shape[1], block_shape[1]):
