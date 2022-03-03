@@ -60,21 +60,6 @@ def threshold(im, func):
     return im > func(im)
 
 
-def build_compressors(codecs, trunc_bits, chunk_factor):
-    compressors = compress_zarr.build_compressors(codecs, trunc_bits, chunk_factor)
-    if 'none' in codecs:
-        for tb in trunc_bits:
-            compressors += [{
-                'name': 'none',
-                'compressor': None,
-                'filters': compress_zarr.trunc_filter(tb),
-                'params': {
-                    'trunc': tb,
-                }
-            }]
-    return compressors
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-n", "--num-tiles", type=int, default=1)
@@ -93,7 +78,7 @@ def main():
     parser.add_argument("-o", "--output-metrics-file", type=str, default="./segmentation_metrics.csv")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
     parser.add_argument("-c", "--codecs", nargs="+", type=str, default=["none"])
-    parser.add_argument("-t", "--trunc-bits", nargs="+", type=int, default=range(9))
+    parser.add_argument("-t", "--trunc-bits", nargs="+", type=int, default=range(13))
     parser.add_argument("-m", "--metrics", nargs="+", type=str, default=['are', 'voi'])  # ['are', 'voi']
 
     args = parser.parse_args(sys.argv[1:])
@@ -109,7 +94,7 @@ def main():
         os.mkdir(args.output_image_dir)
 
     chunk_factor = [4]
-    compressors = build_compressors(args.codecs, args.trunc_bits, chunk_factor)
+    compressors = compress_zarr.build_compressors(args.codecs, args.trunc_bits, chunk_factor)
 
     maven_endpoints = ['sc.fiji:fiji', 'org.morphonets:SNT:4.0.8']
     ij_wrapper = ImageJWrapper(maven_endpoints, max_memory=args.max_memory, headless=True)
