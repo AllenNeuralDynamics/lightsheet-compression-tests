@@ -242,7 +242,7 @@ def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_th
 def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
         output_metrics_file, metrics):
 
-    total_tests = len(compressors) * num_tiles
+    total_tests = len(compressors) * num_tiles * len(scales)
 
     all_metrics = []
 
@@ -281,49 +281,53 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
         # N scales takes N times as long
         sigmas = scale_step * np.array(scales)
         print("sigmas: " + str(sigmas))
-        # Generate ground-truth segmentation
-        num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
-        op = get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_threads)
-        response = filter_ij(data, op, ij_wrapper)
-        binary = threshold(response, threshold_otsu)
-        # Eroding the border prevents all objects touching it from being assigned the same label
-        true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
 
-        if output_image_dir is not None:
-            tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
-
-        for i, c in enumerate(compressors):
-            compressor = c['compressor']
-            filters = c['filters']
-
-            seg_metrics = {
-                'compressor_name': c['name'],
-            }
-
-            seg_metrics.update(c['params'])
-
-            logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
-            logging.info(f"compressor: {c['name']} params: {c['params']}")
-
-            # Generate the test segmentation
-            start = timer()
-            decoded = encode_decode(data, filters, compressor)
-            op = get_ij_filter(ridge_filter, sigmas, res_voxel_size, decoded, ij_wrapper, num_threads)
-            response = filter_ij(decoded, op, ij_wrapper)
+        for sigma in sigmas:
+            # Generate ground-truth segmentation
+            num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
+            op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, data, ij_wrapper, num_threads)
+            response = filter_ij(data, op, ij_wrapper)
             binary = threshold(response, threshold_otsu)
-            test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
-            end = timer()
-            seg_dur = end - start
-            logging.info(f"seg time ij = {seg_dur}")
-
-            seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
+            # Eroding the border prevents all objects touching it from being assigned the same label
+            true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
 
             if output_image_dir is not None:
-                outfile = f"test_seg_{i}.tif"
-                seg_params[outfile] = seg_metrics
-                tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
+                tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
 
-            all_metrics.append(seg_metrics)
+            for i, c in enumerate(compressors):
+                compressor = c['compressor']
+                filters = c['filters']
+
+                seg_metrics = {
+                    'compressor_name': c['name'],
+                    'ridge_filter': ridge_filter,
+                    'sigma': sigma,
+                }
+
+                seg_metrics.update(c['params'])
+
+                logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
+                logging.info(f"compressor: {c['name']} params: {c['params']} filter: {ridge_filter} sigma: {sigma}")
+
+                # Generate the test segmentation
+                start = timer()
+                decoded = encode_decode(data, filters, compressor)
+                op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, decoded, ij_wrapper, num_threads)
+                response = filter_ij(decoded, op, ij_wrapper)
+                binary = threshold(response, threshold_otsu)
+                test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
+                end = timer()
+                seg_dur = end - start
+                logging.info(f"seg time ij = {seg_dur}")
+
+                seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
+
+                if output_image_dir is not None:
+                    outfile = f"test_seg_{i}.tif"
+                    seg_params[outfile] = seg_metrics
+                    tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
+
+                all_metrics.append(seg_metrics)
 
     output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
 
