@@ -173,7 +173,13 @@ def split_list(lst, n):
 def get_best_chunks(chunks, tiff_path, nstd=1):
     """Find the chunks with summed intensity at least nstd standard
     deviations above the mean sum."""
+    if len(chunks) == 0:
+        raise ValueError("Empty chunks list")
+    if len(chunks) == 1:
+        return chunks
     num_workers = multiprocessing.cpu_count()
+    if num_workers > len(chunks):
+        num_workers = len(chunks)
     arrs = list(split_list(chunks, num_workers))
     args = list(zip(arrs, repeat(tiff_path), repeat(nstd)))
     start = timer()
