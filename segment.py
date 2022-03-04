@@ -250,10 +250,16 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
     seg_params = {}
 
     if input_file.endswith('.tif'):
-        chunks = get_tiff_chunks(input_file, (64, 512, 512), discard_singletons=True)
-        logging.info(f"# chunks = {len(chunks)}")
-        chunks = get_best_chunks(chunks, input_file)
-        logging.info(f"# chunks after filtering = {len(chunks)}")
+        chunks_file = f"./best_chunks_{os.path.basename(input_file)}.npy"
+        if os.path.isfile(chunks_file):
+            chunks = [c for c in np.load(chunks_file)]
+            logging.info(f"loaded {len(chunks)} chunks")
+        else:
+            chunks = get_tiff_chunks(input_file, (128, 512, 512), discard_singletons=True)
+            logging.info(f"# chunks = {len(chunks)}")
+            chunks = get_best_chunks(chunks, input_file)
+            logging.info(f"# chunks after filtering = {len(chunks)}")
+            np.save(chunks_file, chunks)
         assert len(chunks) >= num_tiles
 
     for ti in range(num_tiles):
