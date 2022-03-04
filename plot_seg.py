@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import tifffile
 from matplotlib import pyplot as plt
+from skimage import color
 from skimage.morphology import skeletonize
 
 
@@ -42,7 +43,7 @@ def plot_parameters(imdir, param_file, reference_imfile, df_queries=None, annota
     # MIP of ground-truth segmentation
     if max_project:
         input_data = np.max(input_data, axis=0)
-    axes.ravel()[0].imshow(input_data, cmap='gray', aspect='auto')
+    axes.ravel()[0].imshow(color.label2rgb(input_data), aspect='auto')
     axes.ravel()[0].set_title(f"input data")
     # Now plot the test segmentations
     for i in range(param_df.shape[0]):
@@ -50,7 +51,7 @@ def plot_parameters(imdir, param_file, reference_imfile, df_queries=None, annota
         # MIP of test segmentation
         if max_project:
             test_data = np.max(test_data, axis=0)
-        axes.ravel()[i + 1].imshow(test_data, cmap='gray', aspect='auto')
+        axes.ravel()[i + 1].imshow(color.label2rgb(test_data), aspect='auto')
         # Annotate compression parameters and accuracy metrics
         filtered_keys = [k for k in annotate_keys if k in param_df]
         df_keys = param_df[filtered_keys]
@@ -95,17 +96,17 @@ def plot_skeletons(imdir, param_file, reference_imfile, df_queries=None, annotat
     if max_project:
         true_seg = np.max(true_seg, axis=0)
         skel = np.max(skel, axis=0)
-    axes[0][0].imshow(true_seg, cmap='gray', aspect='auto')
+    axes[0][0].imshow(color.label2rgb(true_seg), aspect="auto")
     axes[0][0].set_title(f"ground truth")
-    axes[0][1].imshow(skel, cmap='gray', aspect='auto')
+    axes[0][1].imshow(color.label2rgb(skel), aspect="auto")
     for i in range(param_df.shape[0]):
         test_seg = tifffile.imread(os.path.join(imdir, param_df.index[i]))
         skel = skeletonize(test_seg)
         if max_project:
             test_seg = np.max(test_seg, axis=0)
             skel = np.max(skel, axis=0)
-        axes[i + 1][0].imshow(test_seg, cmap='gray', aspect='auto')
-        axes[i + 1][1].imshow(skel, cmap='gray', aspect='auto')
+        axes[i + 1][0].imshow(color.label2rgb(test_seg), aspect="auto")
+        axes[i + 1][1].imshow(color.label2rgb(skel), aspect="auto")
         # Annotate compression parameters and accuracy metrics
         filtered_keys = [k for k in annotate_keys if k in param_df]
         key_df = param_df[filtered_keys]
@@ -135,7 +136,7 @@ def main():
     param_file = os.path.join(image_dir, "params.json")
     ground_truth_file = os.path.join(image_dir, 'true_seg.tif')
     # Queries to filter the params.json dataframe
-    queries = ['compressor_name == "blosc-zstd"', 'level == 1', 'shuffle == 0']
+    queries = ['compressor_name == "none"']
     with open(param_file, 'r') as f:
         params = json.load(f)
     print(next(iter(params.values())).keys())
@@ -143,7 +144,9 @@ def main():
     # These depend on the compressor family chosen. Blosc does not have a 'rate' parameter, for example.
     # The relevant keys will get filtered out based on those in the parameter json file.
     annotate_keys = ['mse', 'ssim', 'psnr', 'rate', 'precision', 'tolerance', 'compressor_name', 'storage_ratio',
-                     'adapted_rand_error', 'prec', 'rec', 'level', 'trunc', 'shuffle']
+                     'adapted_rand_error', 'prec', 'rec', 'sigma', 'ridge_filter', 'level', 'trunc', 'shuffle']
+    # plot_parameters(image_dir, param_file, ground_truth_file, queries, annotate_keys, max_project=True,
+    #                 sort_key=None)
     plot_skeletons(image_dir, param_file, ground_truth_file, queries, annotate_keys, max_project=True,
                     sort_key=None)
 
