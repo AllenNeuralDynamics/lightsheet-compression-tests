@@ -287,7 +287,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
         response = filter_ij(data, op, ij_wrapper)
         binary = threshold(response, threshold_otsu)
         # Eroding the border prevents all objects touching it from being assigned the same label
-        true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool))
+        true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
 
         if output_image_dir is not None:
             tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
@@ -311,7 +311,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             op = get_ij_filter(ridge_filter, sigmas, res_voxel_size, decoded, ij_wrapper, num_threads)
             response = filter_ij(decoded, op, ij_wrapper)
             binary = threshold(response, threshold_otsu)
-            test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool))
+            test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
             end = timer()
             seg_dur = end - start
             logging.info(f"seg time ij = {seg_dur}")
