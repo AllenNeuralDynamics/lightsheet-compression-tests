@@ -224,6 +224,15 @@ def erode_border(a):
     return a
 
 
+def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_threads):
+    if ridge_filter == 'frangi':
+        return ij_wrapper.frangi_cls(sigmas, res_voxel_size, np.max(data), num_threads)
+    elif ridge_filter == 'sato':
+        return ij_wrapper.tubeness_cls(sigmas, res_voxel_size, num_threads)
+    else:
+        raise ValueError("Unknown filter: " + ridge_filter)
+
+
 def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
         output_metrics_file, metrics):
 
@@ -266,18 +275,12 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
         # N scales takes N times as long
         sigmas = scale_step * np.array(scales)
         print("sigmas: " + str(sigmas))
-
+        # Generate ground-truth segmentation
         num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
-
-        if ridge_filter == 'frangi':
-            op = ij_wrapper.frangi_cls(sigmas, res_voxel_size, np.max(data), num_threads)
-        elif ridge_filter == 'sato':
-            op = ij_wrapper.tubeness_cls(sigmas, res_voxel_size, num_threads)
-        else:
-            raise ValueError("Unknown filter: " + ridge_filter)
-
+        op = get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_threads)
         response = filter_ij(data, op, ij_wrapper)
         binary = threshold(response, threshold_otsu)
+        # Eroding the border prevents all objects touching it from being assigned the same label
         true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool))
 
         if output_image_dir is not None:
@@ -296,14 +299,10 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
 
+            # Generate the test segmentation
             start = timer()
             decoded = encode_decode(data, filters, compressor)
-            if ridge_filter == 'frangi':
-                op = ij_wrapper.frangi_cls(sigmas, res_voxel_size, np.max(decoded), num_threads)
-            elif ridge_filter == 'sato':
-                op = ij_wrapper.tubeness_cls(sigmas, res_voxel_size, num_threads)
-            else:
-                raise ValueError("Unknown filter: " + ridge_filter)
+            op = get_ij_filter(ridge_filter, sigmas, res_voxel_size, decoded, ij_wrapper, num_threads)
             response = filter_ij(decoded, op, ij_wrapper)
             binary = threshold(response, threshold_otsu)
             test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool))
