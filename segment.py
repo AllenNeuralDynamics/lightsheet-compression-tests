@@ -299,6 +299,9 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             chunks = get_best_chunks(chunks, input_file)
             logging.info(f"# chunks after filtering = {len(chunks)}")
             np.save(chunks_file, chunks)
+            save = True
+            if save:
+                save_blocks("./blocks", input_file, chunks, 5)
         assert len(chunks) >= num_tiles
 
     for ti in range(num_tiles):
