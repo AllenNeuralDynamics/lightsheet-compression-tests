@@ -185,9 +185,12 @@ def get_best_chunks(chunks, tiff_path, nstd=1):
     start = timer()
     with multiprocessing.Pool(processes=num_workers) as pool:
         results = list(itertools.chain(*pool.starmap(best_chunks_worker, args)))
+        # sort by sum
+        results = sorted(results, key=lambda x: x[1], reverse=True)
     end = timer()
     logging.info(f"finding chunks took {end-start}s")
-    return results
+    # only return chunks
+    return [r[0] for r in results]
 
 
 def best_chunks_worker(chunks, tiff_path, nstd):
@@ -203,7 +206,7 @@ def best_chunks_worker(chunks, tiff_path, nstd):
         best_chunks = []
         for i, s in enumerate(sums):
             if s >= avgs + nstd * std:
-                best_chunks.append(chunks[i])
+                best_chunks.append((chunks[i], s))
     return best_chunks
 
 
@@ -267,7 +270,7 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
             data, rslice, read_time = compress_zarr.read_random_chunk(input_file, resolution)
             res_voxel_size = np.array(voxel_size) * get_downsample_factors(input_file, rslice, int(resolution))
         elif input_file.endswith('.tif'):
-            c = chunks.pop(random.randint(0, len(chunks) - 1))
+            c = chunks[ti]
             with tifffile.TiffFile(input_file) as f:
                 za = zarr.open(f.aszarr(), 'r')
                 # override user voxel size from tiff metadata
