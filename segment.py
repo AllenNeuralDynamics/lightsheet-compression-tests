@@ -246,6 +246,38 @@ def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_th
         raise ValueError("Unknown filter: " + ridge_filter)
 
 
+def segment(data, ridge_filter, sigma, res_voxel_size, ij_wrapper, return_thresh=False, num_threads=1):
+    op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, data, ij_wrapper, num_threads)
+    response = filter_ij(data, op, ij_wrapper)
+    thresh = response > threshold_otsu(response)
+    # Eroding the border prevents all objects touching it from being assigned the same label
+    seg, _ = ndi.label(erode_border(thresh), structure=np.ones(shape=(3, 3, 3), dtype=bool), output=np.uint16)
+    if return_thresh:
+        return seg, thresh
+    return seg
+
+
+def save_blocks(blocks_path, tiff_path, blocks, n):
+    blocks_path = "./blocks"
+    if not os.path.isdir(blocks_path):
+        os.mkdir(blocks_path)
+    with tifffile.TiffFile(tiff_path) as f:
+        za = zarr.open(f.aszarr(), 'r')
+        for i in range(n):
+            b = blocks[i]
+            data = za[b[0][0]:b[0][1], b[1][0]:b[1][1], b[2][0]:b[2][1]]
+            tifffile.imwrite(os.path.join(blocks_path, f"block_{i}.tif"), data)
+
+
+def get_error_image(true_seg_binary, test_seg_binary):
+    """False negatives get label 1, false positives get label 2"""
+    fn = (true_seg_binary & (~test_seg_binary)).astype(int)
+    fn[fn > 0] = 1
+    fp = (test_seg_binary & (~true_seg_binary)).astype(int)
+    fp[fp > 0] = 2
+    return fn + fp, np.count_nonzero(fn), np.count_nonzero(fp)
+
+
 def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
         output_metrics_file, metrics):
 
@@ -295,14 +327,19 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
         sigmas = scale_step * np.array(scales)
         print("sigmas: " + str(sigmas))
 
+        num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
+
         for sigma in sigmas:
             # Generate ground-truth segmentation
-            num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
-            op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, data, ij_wrapper, num_threads)
-            response = filter_ij(data, op, ij_wrapper)
-            binary = threshold(response, threshold_otsu)
-            # Eroding the border prevents all objects touching it from being assigned the same label
-            true_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
+            true_seg, true_seg_binary = segment(
+                data,
+                ridge_filter,
+                sigma,
+                res_voxel_size,
+                ij_wrapper,
+                return_thresh=True,
+                num_threads=num_threads
+            )
 
             if output_image_dir is not None:
                 tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
@@ -325,10 +362,15 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
                 # Generate the test segmentation
                 start = timer()
                 decoded = encode_decode(data, filters, compressor)
-                op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, decoded, ij_wrapper, num_threads)
-                response = filter_ij(decoded, op, ij_wrapper)
-                binary = threshold(response, threshold_otsu)
-                test_seg, _ = ndi.label(erode_border(binary), structure=np.ones(shape=(3,3,3), dtype=bool), output=np.uint16)
+                test_seg, test_seg_binary = segment(
+                    decoded,
+                    ridge_filter,
+                    sigma,
+                    res_voxel_size,
+                    ij_wrapper,
+                    return_thresh=True,
+                    num_threads=num_threads
+                )
                 end = timer()
                 seg_dur = end - start
                 logging.info(f"seg time ij = {seg_dur}")
