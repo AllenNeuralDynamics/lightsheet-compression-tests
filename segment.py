@@ -235,6 +235,10 @@ def erode_border(a):
 
 def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_threads):
     if ridge_filter == 'frangi':
+        stack_max = np.max(data)
+        if stack_max == 0:
+            # fudge so the method won't error out
+            stack_max = 1
         return ij_wrapper.frangi_cls(sigmas, res_voxel_size, np.max(data), num_threads)
     elif ridge_filter == 'sato':
         return ij_wrapper.tubeness_cls(sigmas, res_voxel_size, num_threads)
