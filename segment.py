@@ -380,10 +380,17 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
 
                 seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
 
+                err, fn_count, fp_count = get_error_image(true_seg_binary, test_seg_binary)
+                seg_metrics['fn_count'] = fn_count
+                seg_metrics['fp_count'] = fp_count
+                logging.info(f"false negatives = {fn_count}, false positives = {fp_count}")
+
                 if output_image_dir is not None:
                     outfile = f"test_seg_{i}.tif"
                     seg_params[outfile] = seg_metrics
                     tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
+                    err_imfile = f"diff_{i}.tif"
+                    tifffile.imwrite(os.path.join(output_image_dir, err_imfile), err)
 
                 all_metrics.append(seg_metrics)
 
