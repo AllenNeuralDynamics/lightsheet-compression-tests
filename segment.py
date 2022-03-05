@@ -74,7 +74,7 @@ def main():
     # Order should be XYZ
     parser.add_argument("-v", "--voxel-size", nargs="+", type=float, default=[1.0, 1.0, 1.0])
     parser.add_argument("-s", "--random-seed", type=int, default=42)
-    parser.add_argument("-f", "--filter", type=str, default='sato')  # 'frangi' or 'sato'
+    parser.add_argument("-f", "--filter", type=str, default='frangi')  # 'frangi' or 'sato'
     # Scales for ridge filters, these are multiplied by the Nyquist rate
     # i.e., half the average voxel spacing of the input image
     parser.add_argument("-g", "--scales", nargs="+", type=float, default=[2, 3, 4])
@@ -239,7 +239,7 @@ def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_th
         if stack_max == 0:
             # fudge so the method won't error out
             stack_max = 1
-        return ij_wrapper.frangi_cls(sigmas, res_voxel_size, np.max(data), num_threads)
+        return ij_wrapper.frangi_cls(sigmas, res_voxel_size, stack_max, num_threads)
     elif ridge_filter == 'sato':
         return ij_wrapper.tubeness_cls(sigmas, res_voxel_size, num_threads)
     else:
