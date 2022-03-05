@@ -4,10 +4,10 @@ import json
 import logging
 import multiprocessing
 import os
+import random
 import shutil
 import sys
 from fractions import Fraction
-import random
 from itertools import repeat
 from timeit import default_timer as timer
 
@@ -15,12 +15,11 @@ import h5py
 import imagej
 import numpy as np
 import pandas as pd
+import scipy.ndimage as ndi
 import scyjava
 import tifffile
 import zarr
-import scipy.ndimage as ndi
-from skimage.filters.thresholding import threshold_mean, threshold_otsu
-from skimage.measure import label
+from skimage.filters.thresholding import threshold_otsu
 from skimage.metrics import adapted_rand_error, variation_of_information
 
 import compress_zarr
@@ -62,10 +61,6 @@ def compare_seg(true_seg, test_seg, metrics):
     return m
 
 
-def threshold(im, func):
-    return im > func(im)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-n", "--num-tiles", type=int, default=1)
@@ -77,7 +72,7 @@ def main():
     parser.add_argument("-f", "--filter", type=str, default='frangi')  # 'frangi' or 'sato'
     # Scales for ridge filters, these are multiplied by the Nyquist rate
     # i.e., half the average voxel spacing of the input image
-    parser.add_argument("-g", "--scales", nargs="+", type=float, default=[2, 3, 4])
+    parser.add_argument("-g", "--scales", nargs="+", type=float, default=[3])
     # Max memory for JVM in megabytes, i.e., -Xmx{max_memory}m
     parser.add_argument("-x", "--max-memory", type=int, default=12000)
     parser.add_argument("-d", "--output-image-dir", type=str, default="./segmented")  # Optional, will save a lot of images
@@ -125,13 +120,21 @@ def main():
     )
 
 
-def parse_tiff_metadata(f):
-    xres = Fraction(*f.pages[0].tags['XResolution'].value)
-    yres = Fraction(*f.pages[0].tags['YResolution'].value)
-    spacing = float(f.imagej_metadata['spacing'])
-    voxel_spacing = [1. / float(xres), 1. / float(yres), spacing]
-    bytes_per_sample = int(f.pages[0].tags['BitsPerSample'].value) / 8
-    return voxel_spacing, bytes_per_sample
+def parse_tiff_metadata(tiff_path):
+    with tifffile.TiffFile(tiff_path) as f:
+        xres = Fraction(*f.pages[0].tags['XResolution'].value)
+        yres = Fraction(*f.pages[0].tags['YResolution'].value)
+        spacing = float(f.imagej_metadata['spacing'])
+        voxel_spacing = [1. / float(xres), 1. / float(yres), spacing]
+        bytes_per_sample = int(f.pages[0].tags['BitsPerSample'].value) / 8
+        return voxel_spacing, bytes_per_sample
+
+
+def get_tiff_shape(tiff_path):
+    # get the shape without loading any image data
+    with tifffile.TiffFile(tiff_path) as f:
+        za = zarr.open(f.aszarr(), 'r')
+        return za.shape
 
 
 def get_downsample_factors(input_file, tile, resolution):
@@ -149,7 +152,7 @@ def lazy_blocks(arr_shape, block_shape, discard_singletons=False):
     """Partition an array with shape arr_shape into blocks with shape block_shape.
     If arr_shape is not wholly divisible by block_shape,
     some blocks will have the remainder as a dimension length."""
-    assert all(block_shape[i] <= arr_shape[i] for i in range(len(arr_shape)))
+    assert (np.array(block_shape) <= np.array(arr_shape)).all()
     blocks = []
     for z in range(0, arr_shape[0], block_shape[0]):
         zint = [z, min(z + block_shape[0], arr_shape[0])]
@@ -159,7 +162,7 @@ def lazy_blocks(arr_shape, block_shape, discard_singletons=False):
                 xint = [x, min(x + block_shape[2], arr_shape[2])]
                 blocks.append(np.vstack([zint, yint, xint]))
     if discard_singletons:
-        # make sure all chunks are truly 3D
+        # make sure all blocks are truly 3D
         blocks = [c for c in blocks if np.all(c[:, 1] - c[:, 0] > 1)]
     return blocks
 
@@ -170,56 +173,43 @@ def split_list(lst, n):
         yield lst[i:i + n]
 
 
-def get_best_chunks(chunks, tiff_path, nstd=1):
-    """Find the chunks with summed intensity at least nstd standard
+def get_best_blocks(blocks, tiff_path, nstd=1):
+    """Find the blocks with summed intensity at least nstd standard
     deviations above the mean sum."""
-    if len(chunks) == 0:
-        raise ValueError("Empty chunks list")
-    if len(chunks) == 1:
-        return chunks
+    if len(blocks) == 0:
+        raise ValueError("Empty blocks list")
+    if len(blocks) == 1:
+        return blocks
     num_workers = multiprocessing.cpu_count()
-    if num_workers > len(chunks):
-        num_workers = len(chunks)
-    arrs = list(split_list(chunks, num_workers))
+    if num_workers > len(blocks):
+        num_workers = len(blocks)
+    arrs = list(split_list(blocks, num_workers))
     args = list(zip(arrs, repeat(tiff_path), repeat(nstd)))
     start = timer()
     with multiprocessing.Pool(processes=num_workers) as pool:
-        results = list(itertools.chain(*pool.starmap(best_chunks_worker, args)))
+        results = list(itertools.chain(*pool.starmap(best_blocks_worker, args)))
         # sort by sum
         results = sorted(results, key=lambda x: x[1], reverse=True)
     end = timer()
-    logging.info(f"finding chunks took {end-start}s")
-    # only return chunks
+    logging.info(f"finding blocks took {end-start}s")
+    # only return blocks
     return [r[0] for r in results]
 
 
-def best_chunks_worker(chunks, tiff_path, nstd):
-    with tifffile.TiffFile(tiff_path) as f:
-        z = zarr.open(f.aszarr(), 'r')
-        sums = []
-        for i, c in enumerate(chunks):
-            # print(f"{i}/{len(chunks)}")
-            data = z[c[0][0]:c[0][1], c[1][0]:c[1][1], c[2][0]:c[2][1]]
-            sums.append(data.sum())
-        avgs = np.mean(sums)
-        std = np.std(sums)
-        best_chunks = []
-        for i, s in enumerate(sums):
-            if s >= avgs + nstd * std:
-                best_chunks.append((chunks[i], s))
-    return best_chunks
+def best_blocks_worker(blocks, tiff_path, nstd):
+    sums = [load_tiff_block(b, tiff_path).sum() for b in blocks]
+    avg = np.mean(sums)
+    std = np.std(sums)
+    best_blocks = []
+    for i, s in enumerate(sums):
+        if s >= avg + nstd * std:
+            best_blocks.append((blocks[i], s))
+    return best_blocks
 
 
-def get_tiff_chunks(input_file, chunk_shape, discard_singletons=False):
+def lazy_blocks_from_tiff(tiff_path, chunk_shape, discard_singletons=False):
     # we only need the array shape, not the data
-    return lazy_blocks(get_tiff_shape(input_file), chunk_shape, discard_singletons)
-
-
-def get_tiff_shape(input_file):
-    # get the shape without loading any image data
-    with tifffile.TiffFile(input_file) as f:
-        za = zarr.open(f.aszarr(), 'r')
-        return za.shape
+    return lazy_blocks(get_tiff_shape(tiff_path), chunk_shape, discard_singletons)
 
 
 def erode_border(a):
@@ -257,16 +247,18 @@ def segment(data, ridge_filter, sigma, res_voxel_size, ij_wrapper, return_thresh
     return seg
 
 
-def save_blocks(blocks_path, tiff_path, blocks, n):
-    blocks_path = "./blocks"
-    if not os.path.isdir(blocks_path):
-        os.mkdir(blocks_path)
+def load_tiff_block(block, tiff_path):
     with tifffile.TiffFile(tiff_path) as f:
         za = zarr.open(f.aszarr(), 'r')
-        for i in range(n):
-            b = blocks[i]
-            data = za[b[0][0]:b[0][1], b[1][0]:b[1][1], b[2][0]:b[2][1]]
-            tifffile.imwrite(os.path.join(blocks_path, f"block_{i}.tif"), data)
+        return za[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
+
+
+def save_blocks(blocks_path, tiff_path, blocks, n):
+    if not os.path.isdir(blocks_path):
+        os.mkdir(blocks_path)
+    for i in range(n):
+        data = load_tiff_block(blocks[i], tiff_path)
+        tifffile.imwrite(os.path.join(blocks_path, f"block_{i}.tif"), data)
 
 
 def get_error_image(true_seg_binary, test_seg_binary):
@@ -289,32 +281,29 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
     seg_params = {}
 
     if input_file.endswith('.tif'):
-        chunks_file = f"./best_chunks_{os.path.basename(input_file)}.npy"
-        if os.path.isfile(chunks_file):
-            chunks = [c for c in np.load(chunks_file)]
-            logging.info(f"loaded {len(chunks)} chunks")
+        # Pull best blocks from cache if they exist
+        blocks_file = f"./best_blocks_{os.path.basename(input_file)}.npy"
+        if os.path.isfile(blocks_file):
+            blocks = [c for c in np.load(blocks_file)]
+            logging.info(f"loaded {len(blocks)} blocks")
         else:
-            chunks = get_tiff_chunks(input_file, (128, 512, 512), discard_singletons=True)
-            logging.info(f"# chunks = {len(chunks)}")
-            chunks = get_best_chunks(chunks, input_file)
-            logging.info(f"# chunks after filtering = {len(chunks)}")
-            np.save(chunks_file, chunks)
+            blocks = lazy_blocks_from_tiff(input_file, (128, 512, 512), discard_singletons=True)
+            logging.info(f"# blocks = {len(blocks)}")
+            blocks = get_best_blocks(blocks, input_file)
+            logging.info(f"# blocks after filtering = {len(blocks)}")
+            np.save(blocks_file, blocks)
             save = True
             if save:
-                save_blocks("./blocks", input_file, chunks, 5)
-        assert len(chunks) >= num_tiles
+                save_blocks("./blocks", input_file, blocks, 5)
+        assert len(blocks) >= num_tiles
 
     for ti in range(num_tiles):
         if input_file.endswith('.h5') or input_file.endswith(".zarr"):
             data, rslice, read_time = compress_zarr.read_random_chunk(input_file, resolution)
             res_voxel_size = np.array(voxel_size) * get_downsample_factors(input_file, rslice, int(resolution))
         elif input_file.endswith('.tif'):
-            c = chunks[ti]
-            with tifffile.TiffFile(input_file) as f:
-                za = zarr.open(f.aszarr(), 'r')
-                # override user voxel size from tiff metadata
-                voxel_size, _ = parse_tiff_metadata(f)
-                data = za[c[0][0]:c[0][1], c[1][0]:c[1][1], c[2][0]:c[2][1]]
+            voxel_size, _ = parse_tiff_metadata(input_file)
+            data = load_tiff_block(blocks[ti], input_file)
             logging.info(f"loaded data with shape {data.shape}")
             res_voxel_size = np.array(voxel_size)
 
