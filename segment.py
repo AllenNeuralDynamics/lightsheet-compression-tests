@@ -19,7 +19,7 @@ import scipy.ndimage as ndi
 import scyjava
 import tifffile
 import zarr
-from skimage.filters.thresholding import threshold_otsu
+from skimage.filters.thresholding import threshold_otsu, threshold_mean, threshold_li
 from skimage.metrics import adapted_rand_error, variation_of_information
 
 import compress_zarr
@@ -239,7 +239,7 @@ def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_th
 def segment(data, ridge_filter, sigma, res_voxel_size, ij_wrapper, return_thresh=False, num_threads=1):
     op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, data, ij_wrapper, num_threads)
     response = filter_ij(data, op, ij_wrapper)
-    thresh = response > threshold_otsu(response)
+    thresh = response > threshold_li(response)
     # Eroding the border prevents all objects touching it from being assigned the same label
     seg, _ = ndi.label(erode_border(thresh), structure=np.ones(shape=(3, 3, 3), dtype=bool), output=np.uint16)
     if return_thresh:
