@@ -240,7 +240,7 @@ if __name__ == "__main__":
 
     if args.multiprocessing:
         start = timer()
-        multiprocessing_result = write_zarr_multiprocessing(args.input_file, key, output_zarr_file1, data.shape,
+        multiprocessing_result = write_zarr_multiprocessing(args.input_file, key, output_zarr_file3, data.shape,
                                                             chunk_shape, interval_list, compressor, filters=None,
                                                             num_workers=args.cores)
         end = timer()
