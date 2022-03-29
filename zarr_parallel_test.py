@@ -16,9 +16,9 @@ from numcodecs import blosc
 
 
 def make_intervals(arr_shape, chunk_shape):
-    """Partition an array with shape arr_shape into blocks with shape block_shape.
-    If arr_shape is not wholly divisible by block_shape,
-    some blocks will have the remainder as a dimension length."""
+    """Partition an array with shape arr_shape into chunks with shape chunk_shape.
+    If arr_shape is not wholly divisible by chunk_shape,
+    some chunks will have the remainder as a dimension length."""
     assert (np.array(chunk_shape) <= np.array(arr_shape)).all()
     chunks = []
     for z in range(0, arr_shape[0], chunk_shape[0]):
@@ -59,7 +59,7 @@ def _worker(input_zarr_path, input_key, output_zarr_path, block):
 
 def write_zarr_dask(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
                     filters, client):
-    """Write a zarr array in parallel over a Dask cluster. Data reads only occurs within workers to minimize
+    """Write a zarr array in parallel over a Dask cluster. Data reads only occur within workers to minimize
     data movement.
     args:
         input_zarr_path  - path to the input file
@@ -113,7 +113,7 @@ def write_zarr_multiprocessing(input_zarr_path, input_key, output_zarr_path, ful
         block_list       - list of min-max intervals used to access chunk data from the input zarr file
         compressor       - the numcodecs compressor instance
         filters          - list of numcodecs filters
-        client           - the Dask client instance
+        num_workers      - number of processes to split the computation
     """
     blosc.use_threads = False
 
@@ -155,7 +155,7 @@ if __name__ == "__main__":
 
     usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
     parser = argparse.ArgumentParser(description=usage_text)
-    parser.add_argument("-i", "--input-file", type=str, default=r"/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr")
+    parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr")
     parser.add_argument("-o", "--output-dir", type=str, default="/allen/scratch/aindtemp/cameron.arshadi")
     parser.add_argument("-r", "--resolution", type=int, default=0)
     parser.add_argument("-s", "--random-seed", type=int, default=None)
