@@ -11,9 +11,7 @@
  
 pwd; hostname; date
  
-python3 -m venv /allen/scratch/aindtemp/cameron.arshadi/venvs/lct
-source /allen/scratch/aindtemp/cameron.arshadi/venvs/lct/bin/activate
-pip install -r /home/cameron.arshadi/repos/lightsheet-compression-tests/requirements.txt
+source /allen/scratch/aindtemp/cameron.arshadi/venvs/dask-env/bin/activate
 
 echo "Running zarr_parallel_test.py"
  

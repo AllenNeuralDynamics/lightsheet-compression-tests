@@ -7,7 +7,4 @@ tifffile
 scikit-image
 scikit-learn
 matplotlib
-dask
-distributed
-dask-jobqueue
 psutil
