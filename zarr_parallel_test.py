@@ -109,6 +109,7 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
 
 
 def write_dask(data, output_zarr_path, compressor, filters, chunk_shape, client):
+    blosc.use_threads = False
     store = zarr.DirectoryStore(output_zarr_path)
     darray = da.from_array(data, chunks=chunk_shape)
     delayed_result = darray.to_zarr(store, compressor=compressor, filters=filters, compute=False, overwrite=True)
