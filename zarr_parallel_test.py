@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from timeit import default_timer as timer
 
 import numpy as np
@@ -55,6 +56,12 @@ def _worker(input_zarr_path, input_key, output_zarr_path, block):
     data = iz["t00000" + "/" + input_key][block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
     oz = zarr.open(output_zarr_path, mode='r+', synchronizer=None)
     oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = data
+
+
+def _thread_worker(data, output_zarr_path, block):
+    oz = zarr.open(output_zarr_path, mode='r+', synchronizer=None)
+    oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = \
+        data[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
 
 
 def write_zarr_dask(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
@@ -142,6 +149,38 @@ def write_zarr_multiprocessing(input_zarr_path, input_key, output_zarr_path, ful
     return z
 
 
+def write_zarr_threading(data, output_zarr_path, full_shape, chunk_shape, block_list, compressor, filters, num_workers=1):
+    blosc.use_threads = False
+
+    # initialize output array
+    z = zarr.open(
+        output_zarr_path,
+        mode='w',
+        compressor=compressor,
+        filters=filters,
+        chunks=chunk_shape,
+        shape=full_shape,
+        dtype=np.uint16,
+        synchronizer=None
+    )
+
+    argslist = list(
+        zip(itertools.repeat(data),
+            itertools.repeat(output_zarr_path),
+            block_list)
+    )
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(_thread_worker, *args) for args in argslist]
+        for future in futures:
+            try:
+                future.result()
+            except Exception as exc:
+                logging.error(exc)
+
+    return z
+
+
 def write_zarr(data, zarr_path, compressor, filters, chunk_shape, num_workers):
     blosc.use_threads = True
     blosc.set_nthreads(num_workers)
@@ -161,6 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--random-seed", type=int, default=None)
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
     parser.add_argument("--multiprocessing", default=False, action="store_true", help="use Python multiprocessing")
+    parser.add_argument("--multithreading", default=False, action="store_true", help="use Python multithreading")
     parser.add_argument("--slurm", default=False, action="store_true", help="use SLURM cluster")
     parser.add_argument("-c", "--cores", type=int, default=8)
     parser.add_argument("-p", "--processes", type=int, default=1)
@@ -177,6 +217,7 @@ if __name__ == "__main__":
     output_zarr_file1 = os.path.join(args.output_dir, "test-file1.zarr")
     output_zarr_file2 = os.path.join(args.output_dir, "test-file2.zarr")
     output_zarr_file3 = os.path.join(args.output_dir, "test-file3.zarr")
+    output_zarr_file4 = os.path.join(args.output_dir, "test-file4.zarr")
 
     if os.path.exists(output_zarr_file1):
         shutil.rmtree(output_zarr_file1)
@@ -184,6 +225,8 @@ if __name__ == "__main__":
         shutil.rmtree(output_zarr_file2)
     if os.path.exists(output_zarr_file3):
         shutil.rmtree(output_zarr_file3)
+    if os.path.exists(output_zarr_file4):
+        shutil.rmtree(output_zarr_file4)
 
     if args.slurm:
         from dask_jobqueue import SLURMCluster
@@ -247,8 +290,20 @@ if __name__ == "__main__":
         logging.info(f"multiprocessing write time: {end - start}, compress MiB/s "
                      f"{multiprocessing_result.nbytes / 2**20 / (end-start)}")
 
-    all_true = np.array_equal(dask_result, default_result)
+    if args.multithreading:
+        start = timer()
+        multithreading_result = write_zarr_threading(data, output_zarr_file4, data.shape,
+                                                     chunk_shape, interval_list, compressor, filters=None,
+                                                     num_workers=args.cores)
+        end = timer()
+        logging.info(f"multithreading write time: {end - start}, compress MiB/s "
+                     f"{multithreading_result.nbytes / 2**20 / (end-start)}")
+
+    all_equal = np.array_equal(dask_result, default_result)
     if args.multiprocessing:
-        all_true &= np.array_equal(default_result, multiprocessing_result)
-    logging.info(f"All equal: {all_true}")
+        all_equal &= np.array_equal(default_result, multiprocessing_result)
+    if args.multithreading:
+        all_equal &= np.array_equal(default_result, multithreading_result)
+
+    logging.info(f"All equal: {all_equal}")
     logging.info(dask_result.info)
