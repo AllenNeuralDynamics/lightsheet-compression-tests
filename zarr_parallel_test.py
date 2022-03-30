@@ -14,6 +14,7 @@ import numpy as np
 import zarr
 from distributed import Client
 from numcodecs import blosc
+import dask.array as da
 
 
 def make_intervals(arr_shape, chunk_shape):
@@ -64,8 +65,8 @@ def _thread_worker(data, output_zarr_path, block):
         data[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
 
 
-def write_zarr_dask(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
-                    filters, client):
+def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
+                       filters, client):
     """Write a zarr array in parallel over a Dask cluster. Data reads only occur within workers to minimize
     data movement.
     args:
@@ -107,8 +108,16 @@ def write_zarr_dask(input_zarr_path, input_key, output_zarr_path, full_shape, ch
     return z
 
 
-def write_zarr_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
-                    filters, num_workers=1):
+def write_dask(data, output_zarr_path, compressor, filters, chunk_shape, client):
+    store = zarr.DirectoryStore(output_zarr_path)
+    darray = da.from_array(data, chunks=chunk_shape)
+    delayed_result = darray.to_zarr(store, compressor=compressor, filters=filters, compute=False, overwrite=True)
+    _ = client.compute(delayed_result).result()
+    return zarr.open(output_zarr_path, 'r')
+
+
+def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
+                          filters, num_workers=1):
     """Write a zarr array in parallel with Python multiprocessing. Data reads only occurs within workers to minimize
     data movement.
     args:
@@ -149,7 +158,7 @@ def write_zarr_multiprocessing(input_zarr_path, input_key, output_zarr_path, ful
     return z
 
 
-def write_zarr_threading(data, output_zarr_path, full_shape, chunk_shape, block_list, compressor, filters, num_workers=1):
+def write_threading(data, output_zarr_path, full_shape, chunk_shape, block_list, compressor, filters, num_workers=1):
     blosc.use_threads = False
 
     # initialize output array
@@ -181,7 +190,7 @@ def write_zarr_threading(data, output_zarr_path, full_shape, chunk_shape, block_
     return z
 
 
-def write_zarr(data, zarr_path, compressor, filters, chunk_shape, num_workers):
+def write_default(data, zarr_path, compressor, filters, chunk_shape, num_workers):
     blosc.use_threads = True
     blosc.set_nthreads(num_workers)
     ds = zarr.DirectoryStore(zarr_path)
@@ -189,7 +198,7 @@ def write_zarr(data, zarr_path, compressor, filters, chunk_shape, num_workers):
     return z
 
 
-if __name__ == "__main__":
+def main():
     # synchronizer = zarr.sync.ProcessSynchronizer("foo.sync")
 
     usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
@@ -199,8 +208,8 @@ if __name__ == "__main__":
     parser.add_argument("-r", "--resolution", type=int, default=0)
     parser.add_argument("-s", "--random-seed", type=int, default=None)
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
-    parser.add_argument("--multiprocessing", default=False, action="store_true", help="use Python multiprocessing")
-    parser.add_argument("--multithreading", default=False, action="store_true", help="use Python multithreading")
+    parser.add_argument("--multiprocessing", default=True, action="store_true", help="use Python multiprocessing")
+    parser.add_argument("--multithreading", default=True, action="store_true", help="use Python multithreading")
     parser.add_argument("--slurm", default=False, action="store_true", help="use SLURM cluster")
     parser.add_argument("-c", "--cores", type=int, default=8)
     parser.add_argument("-p", "--processes", type=int, default=1)
@@ -218,6 +227,7 @@ if __name__ == "__main__":
     output_zarr_file2 = os.path.join(args.output_dir, "test-file2.zarr")
     output_zarr_file3 = os.path.join(args.output_dir, "test-file3.zarr")
     output_zarr_file4 = os.path.join(args.output_dir, "test-file4.zarr")
+    output_zarr_file5 = os.path.join(args.output_dir, "test-file5.zarr")
 
     if os.path.exists(output_zarr_file1):
         shutil.rmtree(output_zarr_file1)
@@ -227,6 +237,8 @@ if __name__ == "__main__":
         shutil.rmtree(output_zarr_file3)
     if os.path.exists(output_zarr_file4):
         shutil.rmtree(output_zarr_file4)
+    if os.path.exists(output_zarr_file5):
+        shutil.rmtree(output_zarr_file5)
 
     if args.slurm:
         from dask_jobqueue import SLURMCluster
@@ -271,39 +283,49 @@ if __name__ == "__main__":
     logging.info(f"num blocks {len(interval_list)}")
 
     start = timer()
-    dask_result = write_zarr_dask(args.input_file, key, output_zarr_file1, data.shape, chunk_shape, interval_list,
-                                  compressor, filters=None, client=client)
+    dask_chunked_result = write_chunked_dask(args.input_file, key, output_zarr_file1, data.shape, chunk_shape, interval_list,
+                                             compressor, filters=None, client=client)
     end = timer()
-    logging.info(f"dask write time: {end - start}, compress MiB/s {dask_result.nbytes / 2**20 / (end-start)}")
+    logging.info(f"dask chunked write time: {end - start}, compress MiB/s {dask_chunked_result.nbytes / 2 ** 20 / (end - start)}")
 
     start = timer()
-    default_result = write_zarr(data, output_zarr_file2, compressor, None, chunk_shape, args.cores)
+    dask_full_result = write_dask(data, output_zarr_file2, compressor, None, chunk_shape, client)
+    end = timer()
+    logging.info(f"dask full write time: {end - start}, compress MiB/s {dask_full_result.nbytes / 2**20 / (end-start)}")
+
+    start = timer()
+    default_result = write_default(data, output_zarr_file3, compressor, None, chunk_shape, args.cores)
     end = timer()
     logging.info(f"default write time: {end - start}, compress MiB/s {default_result.nbytes / 2**20 / (end-start)}")
 
     if args.multiprocessing:
         start = timer()
-        multiprocessing_result = write_zarr_multiprocessing(args.input_file, key, output_zarr_file3, data.shape,
-                                                            chunk_shape, interval_list, compressor, filters=None,
-                                                            num_workers=args.cores)
+        multiprocessing_result = write_multiprocessing(args.input_file, key, output_zarr_file4, data.shape,
+                                                       chunk_shape, interval_list, compressor, filters=None,
+                                                       num_workers=args.cores)
         end = timer()
         logging.info(f"multiprocessing write time: {end - start}, compress MiB/s "
                      f"{multiprocessing_result.nbytes / 2**20 / (end-start)}")
 
     if args.multithreading:
         start = timer()
-        multithreading_result = write_zarr_threading(data, output_zarr_file4, data.shape,
-                                                     chunk_shape, interval_list, compressor, filters=None,
-                                                     num_workers=args.cores)
+        multithreading_result = write_threading(data, output_zarr_file5, data.shape,
+                                                chunk_shape, interval_list, compressor, filters=None,
+                                                num_workers=args.cores)
         end = timer()
-        logging.info(f"multithreading write time: {end - start}, compress MiB/s "
+        logging.info(f"threading write time: {end - start}, compress MiB/s "
                      f"{multithreading_result.nbytes / 2**20 / (end-start)}")
 
-    all_equal = np.array_equal(dask_result, default_result)
+    all_equal = np.array_equal(dask_chunked_result[:], default_result[:])
+    all_equal &= np.array_equal(dask_full_result[:], default_result[:])
     if args.multiprocessing:
-        all_equal &= np.array_equal(default_result, multiprocessing_result)
+        all_equal &= np.array_equal(default_result[:], multiprocessing_result[:])
     if args.multithreading:
-        all_equal &= np.array_equal(default_result, multithreading_result)
+        all_equal &= np.array_equal(default_result[:], multithreading_result[:])
 
     logging.info(f"All equal: {all_equal}")
-    logging.info(dask_result.info)
+    logging.info(dask_chunked_result.info)
+
+
+if __name__ == "__main__":
+    main()
