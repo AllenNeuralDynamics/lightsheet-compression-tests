@@ -41,13 +41,13 @@ def guess_chunk_shape(data_shape, num_workers):
     data_shape = np.array(data_shape)
     chunk_shape = data_shape.copy()
     ndims = len(data_shape)
-    num_chunks = np.product(data_shape / chunk_shape)
+    num_chunks = 1
     idx = 0
     # we want more chunks than workers
     while num_chunks <= num_workers:
         chunk_shape[idx % ndims] = math.ceil(chunk_shape[idx % ndims] / 2.0)
         idx += 1
-        num_chunks = np.product(data_shape / chunk_shape)
+        num_chunks = math.ceil(np.product(data_shape / chunk_shape))
     return tuple(int(c) for c in chunk_shape)
 
 
