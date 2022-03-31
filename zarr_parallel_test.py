@@ -216,6 +216,7 @@ def main():
     parser.add_argument("-p", "--processes", type=int, default=1)
     parser.add_argument("-m", "--mem", type=int, default=16)
     parser.add_argument("--chunk-shape", type=str, default=None)
+    parser.add_argument("--nchunks", type=int, default=None)
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -275,7 +276,11 @@ def main():
     # In my testing, roughly 1.5-2X as many blocks as workers gives good performance.
     # A 1:1 ratio did not work as well for some reason.
     if args.chunk_shape is None:
-        chunk_shape = guess_chunk_shape(data.shape, args.cores)
+        if args.nchunks is None:
+            nchunks = args.cores
+        else:
+            nchunks = args.nchunks
+        chunk_shape = guess_chunk_shape(data.shape, nchunks)
     else:
         chunk_shape = tuple(ast.literal_eval(args.chunk_shape))
     logging.info(f"data shape {data.shape}")
