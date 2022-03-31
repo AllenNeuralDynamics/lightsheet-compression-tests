@@ -160,6 +160,17 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
 
 
 def write_threading(data, output_zarr_path, full_shape, chunk_shape, block_list, compressor, filters, num_workers=1):
+    """Write a zarr array in parallel with Python threading.
+    args:
+        data             - the input array
+        output_zarr_path - the path to write the output zarr file
+        full_shape       - the shape of the input array
+        chunk_shape      - the chunk shape
+        block_list       - list of min-max intervals used to access chunk data from the input zarr file
+        compressor       - the numcodecs compressor instance
+        filters          - list of numcodecs filters
+        num_workers      - number of threads to split the computation
+    """
     blosc.use_threads = False
 
     # initialize output array
@@ -191,10 +202,10 @@ def write_threading(data, output_zarr_path, full_shape, chunk_shape, block_list,
     return z
 
 
-def write_default(data, zarr_path, compressor, filters, chunk_shape, num_workers):
+def write_default(data, output_zarr_path, compressor, filters, chunk_shape, num_workers):
     blosc.use_threads = True
     blosc.set_nthreads(num_workers)
-    ds = zarr.DirectoryStore(zarr_path)
+    ds = zarr.DirectoryStore(output_zarr_path)
     z = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=ds, overwrite=True)
     return z
 
