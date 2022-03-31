@@ -15,6 +15,9 @@ import tifffile
 
 from timeit import default_timer as timer
 
+import zarr_parallel_test
+
+
 def trunc_filter(bits):
     scale = 1.0 / (2 ** bits)
     return [] if bits == 0 else [ numcodecs.fixedscaleoffset.FixedScaleOffset(offset=0, scale=scale, dtype=np.uint16) ]
@@ -169,6 +172,8 @@ def main():
     parser.add_argument("-t","--trunc-bits", nargs="+", type=int, default=[0,2,4])
     parser.add_argument("-b", "--block-scale-factor", nargs="+", type=int, default=[1])
     parser.add_argument("-m", "--metrics", nargs="+", type=str, default=[])  # [mse, ssim, psnr]
+    parser.add_argument("-p", "--parallel", default=True, action="store_true")
+    parser.add_argument("--threads", type=int, default=8)
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -186,7 +191,9 @@ def main():
         input_file=args.input_file,
         output_data_file=args.output_data_file,
         quality_metrics=args.metrics,
-        output_metrics_file=args.output_metrics_file)
+        output_metrics_file=args.output_metrics_file,
+        use_parallel=args.parallel,
+        threads=args.threads)
 
 def read_dataset_chunk(dataset, key):
     logging.info(f"loading {key}")
@@ -255,15 +262,20 @@ def estimate_size(shape, bytes_per_pixel):
     """Array size in MiB"""
     return (np.product(shape) * bytes_per_pixel) / (1024. * 1024)
 
-def compress_write(data, compressor, filters, block_multiplier, quality_metrics, output_path):
-    chunk_shape, chunk_size = guess_chunk_shape(data, bytes_per_pixel=2, scale_factor=block_multiplier)
+def compress_write(data, compressor, filters, block_multiplier, quality_metrics, output_path, use_parallel=False, threads=1):
     psutil.cpu_percent(interval=None)
     start = timer()
-    ds = zarr.DirectoryStore(output_path)
-    za = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=ds, overwrite=True)
+    if use_parallel:
+        chunk_shape = zarr_parallel_test.guess_chunk_shape(data.shape, threads)
+        chunk_size = estimate_size(chunk_shape, data.itemsize)
+        block_list = zarr_parallel_test.make_intervals(data.shape, chunk_shape)
+        za = zarr_parallel_test.write_threading(data, output_path, chunk_shape, block_list, compressor, filters, threads)
+    else:
+        chunk_shape, chunk_size = guess_chunk_shape(data, bytes_per_pixel=data.itemsize, scale_factor=block_multiplier)
+        za = zarr_parallel_test.write_default(data, output_path, compressor, filters, chunk_shape, threads)
+    end = timer()
     logging.info(str(za.info))
     cpu_utilization = psutil.cpu_percent(interval=None)
-    end = timer()
     compress_dur = end - start
     logging.info(f"compression time = {compress_dur}, bps = {data.nbytes / compress_dur}, ratio = {za.nbytes/za.nbytes_stored}, cpu = {cpu_utilization}%")
 
@@ -303,7 +315,8 @@ def eval_quality(input_data, decoded_data, quality_metrics):
                                                      data_range=decoded_data.max() - decoded_data.min())
     return qa
 
-def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, quality_metrics, output_metrics_file):
+def run(compressors, num_tiles, resolution, random_seed, input_file, output_data_file, quality_metrics,
+        output_metrics_file, use_parallel=False, threads=1):
     if random_seed is not None:
         random.seed(random_seed)
 
@@ -329,7 +342,7 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
             logging.info(f"starting test {len(all_metrics)+1}/{total_tests}")
             logging.info(f"compressor: {c['name']} params: {c['params']}")
 
-            metrics = compress_write(data, compressor, filters, chunk_factor, quality_metrics, output_data_file)
+            metrics = compress_write(data, compressor, filters, chunk_factor, quality_metrics, output_data_file, use_parallel, threads)
 
             tile_metrics.update(metrics)
             tile_metrics['read_time'] = read_time

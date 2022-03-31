@@ -158,7 +158,7 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
     return z
 
 
-def write_threading(data, output_zarr_path, chunk_shape, block_list, compressor, filters, num_workers=1):
+def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compressor=None, filters=None, num_workers=1):
     """Write a zarr array in parallel with Python threading.
     args:
         data             - the input array
