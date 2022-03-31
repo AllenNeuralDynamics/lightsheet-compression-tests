@@ -334,7 +334,7 @@ def run(compressors, num_tiles, resolution, random_seed, input_file, output_data
             tile_metrics.update(metrics)
             tile_metrics['read_time'] = read_time
             tile_metrics['read_bps'] = metrics['bytes_read'] / read_time
-            tile_metrics['compress_bps'] = metrics['bytes_written'] / metrics['compress_time']
+            tile_metrics['compress_bps'] = metrics['bytes_read'] / metrics['compress_time']
             tile_metrics['storage_ratio'] = metrics['bytes_read'] / metrics['bytes_written']
             # tile_metrics['write_time'] = data['write_time']
             # tile_metrics['write_bps'] = data['write_time'] / data['bytes_written']
