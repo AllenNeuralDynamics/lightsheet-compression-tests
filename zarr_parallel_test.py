@@ -254,7 +254,7 @@ def main():
         client = Client(cluster)
     else:
         logging.info("Using local cluster")
-        client = Client()
+        client = Client(n_workers=args.processes, threads_per_worker=int(math.ceil(args.cores / args.processes)))
 
     logging.info(client)
 
