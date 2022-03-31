@@ -93,8 +93,8 @@ def lossless_compressor_lib(trunc_bits, chunk_factor):
 
 def lossy_compressor_lib(trunc_bits, chunk_factor):
     import zfpy
-    tols = [ 0, 2**4, 2**8, 2**16  ]
-    rates = [ 1.0, 0.8, 0.5 ] # maxbits / 4^d
+    tols = [ 0, 2**0, 2**1, 2**2, 2**4, 2**8, 2**16 ]
+    rates = [ 4, 6, 8, 10, 12, 14, 16 ] # maxbits / 4^d
     precisions = [ 16, 14, 12 ] # number of bit planes encoded for transform coefficients
 
     cast_filter = [ numcodecs.astype.AsType(encode_dtype=np.float32, decode_dtype=np.uint16) ]
