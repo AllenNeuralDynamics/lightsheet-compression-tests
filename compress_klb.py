@@ -85,7 +85,7 @@ def run(compressors, input_file, num_tiles, resolution, random_seed, output_data
                 'bytes_read': data.nbytes,
                 'read_time': read_dur,
                 'read_bps': data.nbytes / read_dur,
-                'compress_bps': bytes_written / compress_dur,
+                'compress_bps': data.nbytes / compress_dur,
                 'compress_time': compress_dur,
                 'bytes_written': bytes_written,
                 'shape': data.shape,
