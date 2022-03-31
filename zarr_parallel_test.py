@@ -59,9 +59,8 @@ def _worker(input_zarr_path, input_key, output_zarr_path, block):
     oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = data
 
 
-def _thread_worker(data, output_zarr_path, block):
-    oz = zarr.open(output_zarr_path, mode='r+', synchronizer=None)
-    oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = \
+def _thread_worker(data, output_zarr_array, block):
+    output_zarr_array[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = \
         data[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
 
 
@@ -159,12 +158,11 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
     return z
 
 
-def write_threading(data, output_zarr_path, full_shape, chunk_shape, block_list, compressor, filters, num_workers=1):
+def write_threading(data, output_zarr_path, chunk_shape, block_list, compressor, filters, num_workers=1):
     """Write a zarr array in parallel with Python threading.
     args:
         data             - the input array
         output_zarr_path - the path to write the output zarr file
-        full_shape       - the shape of the input array
         chunk_shape      - the chunk shape
         block_list       - list of min-max intervals used to access chunk data from the input zarr file
         compressor       - the numcodecs compressor instance
@@ -180,14 +178,14 @@ def write_threading(data, output_zarr_path, full_shape, chunk_shape, block_list,
         compressor=compressor,
         filters=filters,
         chunks=chunk_shape,
-        shape=full_shape,
+        shape=data.shape,
         dtype=np.uint16,
         synchronizer=None
     )
 
     argslist = list(
         zip(itertools.repeat(data),
-            itertools.repeat(output_zarr_path),
+            itertools.repeat(z),
             block_list)
     )
 
@@ -333,9 +331,8 @@ def main():
 
     if args.multithreading:
         start = timer()
-        multithreading_result = write_threading(data, output_zarr_file5, data.shape,
-                                                chunk_shape, interval_list, compressor, filters=None,
-                                                num_workers=args.cores)
+        multithreading_result = write_threading(data, output_zarr_file5, chunk_shape, interval_list, compressor,
+                                                filters=None, num_workers=args.cores)
         end = timer()
         logging.info(f"threading write time: {end - start}, compress MiB/s "
                      f"{multithreading_result.nbytes / 2**20 / (end-start)}")
