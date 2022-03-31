@@ -241,6 +241,9 @@ def main():
     if os.path.exists(output_zarr_file5):
         shutil.rmtree(output_zarr_file5)
 
+    logging.info(f"num cpus: {multiprocessing.cpu_count()}")
+
+    cluster = None
     if args.slurm:
         from dask_jobqueue import SLURMCluster
         logging.info(f"Using SLURM cluster with {args.cores} cores and {args.processes} processes")
@@ -293,6 +296,10 @@ def main():
     dask_full_result = write_dask(data, output_zarr_file2, compressor, None, chunk_shape, client)
     end = timer()
     logging.info(f"dask full write time: {end - start}, compress MiB/s {dask_full_result.nbytes / 2**20 / (end-start)}")
+
+    if cluster is not None:
+        cluster.close()
+    client.close()
 
     start = timer()
     default_result = write_default(data, output_zarr_file3, compressor, None, chunk_shape, args.cores)
