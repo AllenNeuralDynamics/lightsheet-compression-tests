@@ -164,7 +164,7 @@ def main():
     parser.add_argument("-n","--num-tiles", type=int, default=1)
     parser.add_argument("-r","--resolution", type=str, default="1")
     parser.add_argument("-s","--random-seed", type=int, default=None)
-    parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/2020-12-01-training-data/2020-12-01-stack-15/images/BrainSlice1_MMStack_Pos33_15_shift.tif")
+    parser.add_argument("-i","--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr")
     parser.add_argument("-d","--output-data-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test_file.zarr")
     parser.add_argument("-o","--output-metrics-file", type=str, default="./compression_metrics.csv")
     parser.add_argument("-l","--log-level", type=str, default=logging.INFO)
