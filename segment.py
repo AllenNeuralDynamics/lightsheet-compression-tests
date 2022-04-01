@@ -42,12 +42,32 @@ def encode_decode(im, filters, compressor):
     return za[:]
 
 
-def filter_ij(im, op, ij_wrapper):
+def filter_ij(im, filter, sigma, voxel_size, num_threads, ij_wrapper):
     # Convert numpy array to Java RandomAccessibleInterval
     # This automatically swaps axes from ZYX -> XYZ
     java_in = ij_wrapper.ij.py.to_java(im)
     java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
-    op.compute(java_in, java_out)
+    if filter == 'frangi':
+        stack_max = np.max(im)
+        if stack_max == 0:
+            # fudge so the method won't error out
+            stack_max = 1
+        op = ij_wrapper.frangi_cls([sigma], voxel_size, stack_max, num_threads)
+        op.compute(java_in, java_out)
+    elif filter == 'sato':
+        op = ij_wrapper.tubeness_cls([sigma], voxel_size, num_threads)
+        op.compute(java_in, java_out)
+    elif filter == 'gauss':
+        pix_sigmas = np.tile([sigma], 3) / voxel_size
+        ij_wrapper.ij.op().filter().gauss(java_out, java_in, pix_sigmas.tolist())
+    elif filter == 'dog':
+        java_in_float = ij_wrapper.ij.op().convert().float32(ij_wrapper.ij.op().transform().flatIterableView(java_in))
+        sigmas1 = np.tile([sigma / 1.6], 3) / voxel_size
+        sigmas2 = np.tile([sigma], 3) / voxel_size
+        ij_wrapper.ij.op().filter().dog(java_out, java_in_float, sigmas1.tolist(), sigmas2.tolist())
+    else:
+        raise ValueError("Unknown filter: " + filter)
+
     # Back to numpy and ZYX order
     return ij_wrapper.ij.py.from_java(java_out)
 
@@ -69,7 +89,7 @@ def main():
     # Order should be XYZ
     parser.add_argument("-v", "--voxel-size", nargs="+", type=float, default=[1.0, 1.0, 1.0])
     parser.add_argument("-s", "--random-seed", type=int, default=42)
-    parser.add_argument("-f", "--filter", type=str, default='frangi')  # 'frangi' or 'sato'
+    parser.add_argument("-f", "--filters", nargs="+", type=str, default=['gauss', 'frangi', 'sato'])
     # Scales for ridge filters, these are multiplied by the Nyquist rate
     # i.e., half the average voxel spacing of the input image
     parser.add_argument("-g", "--scales", nargs="+", type=float, default=[3])
@@ -111,7 +131,7 @@ def main():
         args.input_file,
         args.voxel_size,
         ij_wrapper,
-        args.filter,
+        args.filters,
         args.scales,
         compressors,
         args.output_image_dir,
@@ -223,22 +243,8 @@ def erode_border(a):
     return a
 
 
-def get_ij_filter(ridge_filter, sigmas, res_voxel_size, data, ij_wrapper, num_threads):
-    if ridge_filter == 'frangi':
-        stack_max = np.max(data)
-        if stack_max == 0:
-            # fudge so the method won't error out
-            stack_max = 1
-        return ij_wrapper.frangi_cls(sigmas, res_voxel_size, stack_max, num_threads)
-    elif ridge_filter == 'sato':
-        return ij_wrapper.tubeness_cls(sigmas, res_voxel_size, num_threads)
-    else:
-        raise ValueError("Unknown filter: " + ridge_filter)
-
-
-def segment(data, ridge_filter, sigma, res_voxel_size, ij_wrapper, return_thresh=False, num_threads=1):
-    op = get_ij_filter(ridge_filter, [sigma], res_voxel_size, data, ij_wrapper, num_threads)
-    response = filter_ij(data, op, ij_wrapper)
+def segment(data, filter, sigma, res_voxel_size, ij_wrapper, return_thresh=False, num_threads=1):
+    response = filter_ij(data, filter, sigma, res_voxel_size, num_threads,  ij_wrapper)
     thresh = response > threshold_li(response)
     # Eroding the border prevents all objects touching it from being assigned the same label
     seg, _ = ndi.label(erode_border(thresh), structure=np.ones(shape=(3, 3, 3), dtype=bool), output=np.uint16)
@@ -270,10 +276,10 @@ def get_error_image(true_seg_binary, test_seg_binary):
     return fn + fp, np.count_nonzero(fn), np.count_nonzero(fp)
 
 
-def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter, scales, compressors, output_image_dir,
+def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, filters, scales, compressors, output_image_dir,
         output_metrics_file, metrics):
 
-    total_tests = len(compressors) * num_tiles * len(scales)
+    total_tests = len(compressors) * num_tiles * len(scales) * len(filters)
 
     all_metrics = []
 
@@ -321,67 +327,74 @@ def run(num_tiles, resolution, input_file, voxel_size, ij_wrapper, ridge_filter,
 
         num_threads = ij_wrapper.runtime_cls.getRuntime().availableProcessors()
 
-        for sigma in sigmas:
-            # Generate ground-truth segmentation
-            true_seg, true_seg_binary = segment(
-                data,
-                ridge_filter,
-                sigma,
-                res_voxel_size,
-                ij_wrapper,
-                return_thresh=True,
-                num_threads=num_threads
-            )
+        for filter in filters:
 
             if output_image_dir is not None:
-                tifffile.imwrite(os.path.join(output_image_dir, 'true_seg.tif'), true_seg)
+                filtered_im_dir = os.path.join(output_image_dir, filter)
+                if not os.path.exists(filtered_im_dir):
+                    os.mkdir(filtered_im_dir)
 
-            for i, c in enumerate(compressors):
-                compressor = c['compressor']
-                filters = c['filters']
-
-                seg_metrics = {
-                    'compressor_name': c['name'],
-                    'ridge_filter': ridge_filter,
-                    'sigma': sigma,
-                }
-
-                seg_metrics.update(c['params'])
-
-                logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
-                logging.info(f"compressor: {c['name']} params: {c['params']} filter: {ridge_filter} sigma: {sigma}")
-
-                # Generate the test segmentation
-                start = timer()
-                decoded = encode_decode(data, filters, compressor)
-                test_seg, test_seg_binary = segment(
-                    decoded,
-                    ridge_filter,
+            for sigma in sigmas:
+                # Generate ground-truth segmentation
+                true_seg, true_seg_binary = segment(
+                    data,
+                    filter,
                     sigma,
                     res_voxel_size,
                     ij_wrapper,
                     return_thresh=True,
                     num_threads=num_threads
                 )
-                end = timer()
-                seg_dur = end - start
-                logging.info(f"seg time ij = {seg_dur}")
-
-                seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
-
-                err, fn_count, fp_count = get_error_image(true_seg_binary, test_seg_binary)
-                seg_metrics['fn_count'] = fn_count
-                seg_metrics['fp_count'] = fp_count
-                logging.info(f"false negatives = {fn_count}, false positives = {fp_count}")
 
                 if output_image_dir is not None:
-                    outfile = f"test_seg_{i}.tif"
-                    seg_params[outfile] = seg_metrics
-                    tifffile.imwrite(os.path.join(output_image_dir, outfile), test_seg)
-                    err_imfile = f"diff_{i}.tif"
-                    tifffile.imwrite(os.path.join(output_image_dir, err_imfile), err)
+                    tifffile.imwrite(os.path.join(filtered_im_dir, f'true_seg_sigma_{round(sigma, 3)}.tif'), true_seg)
 
-                all_metrics.append(seg_metrics)
+                for i, c in enumerate(compressors):
+                    compressor = c['compressor']
+                    filters = c['filters']
+
+                    seg_metrics = {
+                        'compressor_name': c['name'],
+                        'feature': filter,
+                        'sigma': sigma,
+                    }
+
+                    seg_metrics.update(c['params'])
+
+                    logging.info(f"starting test {len(all_metrics) + 1}/{total_tests}")
+                    logging.info(f"compressor: {c['name']} params: {c['params']} filter: {filter} sigma: {sigma}")
+
+                    # Generate the test segmentation
+                    start = timer()
+                    decoded = encode_decode(data, filters, compressor)
+                    test_seg, test_seg_binary = segment(
+                        decoded,
+                        filter,
+                        sigma,
+                        res_voxel_size,
+                        ij_wrapper,
+                        return_thresh=True,
+                        num_threads=num_threads
+                    )
+                    end = timer()
+                    seg_dur = end - start
+                    logging.info(f"seg time ij = {seg_dur}")
+
+                    seg_metrics.update(compare_seg(true_seg, test_seg, metrics))
+
+                    err, fn_count, fp_count = get_error_image(true_seg_binary, test_seg_binary)
+                    seg_metrics['fn_count'] = fn_count
+                    seg_metrics['fp_count'] = fp_count
+                    logging.info(f"false negatives = {fn_count}, false positives = {fp_count}")
+
+                    if output_image_dir is not None:
+                        outfile = f"test_seg_sigma_{round(sigma, 3)}_tb_{c['params']['trunc']}.tif"
+                        seg_params[outfile] = seg_metrics
+                        tifffile.imwrite(os.path.join(filtered_im_dir, outfile), test_seg)
+                        err_imfile = f"diff_sigma_{round(sigma, 3)}_tb_{c['params']['trunc']}.tif"
+                        tifffile.imwrite(os.path.join(filtered_im_dir, err_imfile), err)
+
+                    all_metrics.append(seg_metrics)
 
     output_metrics_file = output_metrics_file.replace('.csv', '_' + os.path.basename(input_file) + '.csv')
 
