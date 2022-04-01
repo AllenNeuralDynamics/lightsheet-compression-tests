@@ -42,34 +42,53 @@ def encode_decode(im, filters, compressor):
     return za[:]
 
 
-def filter_ij(im, filter, sigma, voxel_size, num_threads, ij_wrapper):
-    # Convert numpy array to Java RandomAccessibleInterval
-    # This automatically swaps axes from ZYX -> XYZ
-    java_in = ij_wrapper.ij.py.to_java(im)
-    java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
+def imfilter(im, filter, sigma, voxel_size, num_threads, ij_wrapper):
     if filter == 'frangi':
+        # Convert numpy array to Java RandomAccessibleInterval
+        # This automatically swaps axes from ZYX -> XYZ
+        java_in = ij_wrapper.ij.py.to_java(im)
+        java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
         stack_max = np.max(im)
         if stack_max == 0:
             # fudge so the method won't error out
             stack_max = 1
         op = ij_wrapper.frangi_cls([sigma], voxel_size, stack_max, num_threads)
         op.compute(java_in, java_out)
+        return ij_wrapper.ij.py.from_java(java_out)
     elif filter == 'sato':
+        # Convert numpy array to Java RandomAccessibleInterval
+        # This automatically swaps axes from ZYX -> XYZ
+        java_in = ij_wrapper.ij.py.to_java(im)
+        java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
         op = ij_wrapper.tubeness_cls([sigma], voxel_size, num_threads)
         op.compute(java_in, java_out)
+        return ij_wrapper.ij.py.from_java(java_out)
     elif filter == 'gauss':
+        # Convert numpy array to Java RandomAccessibleInterval
+        # This automatically swaps axes from ZYX -> XYZ
+        java_in = ij_wrapper.ij.py.to_java(im)
+        java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
         pix_sigmas = np.tile([sigma], 3) / voxel_size
         ij_wrapper.ij.op().filter().gauss(java_out, java_in, pix_sigmas.tolist())
+        return ij_wrapper.ij.py.from_java(java_out)
     elif filter == 'dog':
+        # Convert numpy array to Java RandomAccessibleInterval
+        # This automatically swaps axes from ZYX -> XYZ
+        java_in = ij_wrapper.ij.py.to_java(im)
+        java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
         java_in_float = ij_wrapper.ij.op().convert().float32(ij_wrapper.ij.op().transform().flatIterableView(java_in))
         sigmas1 = np.tile([sigma / 1.6], 3) / voxel_size
         sigmas2 = np.tile([sigma], 3) / voxel_size
         ij_wrapper.ij.op().filter().dog(java_out, java_in_float, sigmas1.tolist(), sigmas2.tolist())
+        return ij_wrapper.ij.py.from_java(java_out)
+    elif filter == "log":
+        px_sigma = np.tile([sigma], 3) / voxel_size
+        return ndi.gaussian_laplace(im, px_sigma)
     else:
         raise ValueError("Unknown filter: " + filter)
 
     # Back to numpy and ZYX order
-    return ij_wrapper.ij.py.from_java(java_out)
+
 
 
 def compare_seg(true_seg, test_seg, metrics):
@@ -89,7 +108,7 @@ def main():
     # Order should be XYZ
     parser.add_argument("-v", "--voxel-size", nargs="+", type=float, default=[1.0, 1.0, 1.0])
     parser.add_argument("-s", "--random-seed", type=int, default=42)
-    parser.add_argument("-f", "--filters", nargs="+", type=str, default=['gauss', 'frangi', 'sato'])
+    parser.add_argument("-f", "--filters", nargs="+", type=str, default=['gauss', 'frangi', 'sato', 'log'])
     # Scales for ridge filters, these are multiplied by the Nyquist rate
     # i.e., half the average voxel spacing of the input image
     parser.add_argument("-g", "--scales", nargs="+", type=float, default=[3])
@@ -244,10 +263,10 @@ def erode_border(a):
 
 
 def segment(data, filter, sigma, res_voxel_size, ij_wrapper, return_thresh=False, num_threads=1):
-    response = filter_ij(data, filter, sigma, res_voxel_size, num_threads,  ij_wrapper)
+    response = imfilter(data, filter, sigma, res_voxel_size, num_threads, ij_wrapper)
     thresh = response > threshold_li(response)
     # Eroding the border prevents all objects touching it from being assigned the same label
-    seg, _ = ndi.label(erode_border(thresh), structure=np.ones(shape=(3, 3, 3), dtype=bool), output=np.uint16)
+    seg, _ = ndi.label(erode_border(thresh), structure=np.ones(shape=(3, 3, 3), dtype=bool), output=np.uint32)
     if return_thresh:
         return seg, thresh
     return seg
