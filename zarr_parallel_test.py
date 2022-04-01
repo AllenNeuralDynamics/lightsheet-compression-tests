@@ -34,7 +34,7 @@ def make_intervals(arr_shape, chunk_shape):
 
 
 def guess_chunk_shape(data_shape, num_workers):
-    """Find a chunk shape that results in roughly 2X as many chunks as worker threads.
+    """Find a chunk shape that results in roughly as many chunks as worker threads.
     Chunks are generally close to some power-of-2 fraction of each axis, slightly
     favoring bigger values for the last index.
     """
@@ -43,8 +43,7 @@ def guess_chunk_shape(data_shape, num_workers):
     ndims = len(data_shape)
     num_chunks = 1
     idx = 0
-    # we want more chunks than workers
-    while num_chunks <= num_workers:
+    while num_chunks < num_workers:
         chunk_shape[idx % ndims] = math.ceil(chunk_shape[idx % ndims] / 2.0)
         idx += 1
         num_chunks = math.ceil(np.product(data_shape / chunk_shape))
