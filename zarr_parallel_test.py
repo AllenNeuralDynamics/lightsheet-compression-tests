@@ -80,17 +80,18 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
     """
     blosc.use_threads = False
 
-    # initialize output array
-    z = zarr.open(
-        output_zarr_path,
-        mode='w',
+    store = _init_store(output_zarr_path)
+
+    z = zarr.create(
+        store=store,
         compressor=compressor,
         filters=filters,
         chunks=chunk_shape,
         shape=full_shape,
         dtype=np.uint16,
-        synchronizer=None
+        overwrite=True
     )
+
 
     argslist = list(
         zip(itertools.repeat(input_zarr_path),
@@ -108,7 +109,7 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
 
 def write_dask(data, output_zarr_path, compressor, filters, chunk_shape, client):
     blosc.use_threads = False
-    store = zarr.DirectoryStore(output_zarr_path)
+    store = _init_store(output_zarr_path)
     darray = da.from_array(data, chunks=chunk_shape)
     delayed_result = darray.to_zarr(store, compressor=compressor, filters=filters, compute=False, overwrite=True)
     _ = client.compute(delayed_result).result()
@@ -132,16 +133,16 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
     """
     blosc.use_threads = False
 
-    # initialize output array
-    z = zarr.open(
-        output_zarr_path,
-        mode='w',
+    store = _init_store(output_zarr_path)
+
+    z = zarr.create(
+        store=store,
         compressor=compressor,
         filters=filters,
         chunks=chunk_shape,
         shape=full_shape,
         dtype=np.uint16,
-        synchronizer=None
+        overwrite=True
     )
 
     argslist = list(
@@ -170,16 +171,16 @@ def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compre
     """
     blosc.use_threads = False
 
-    # initialize output array
-    z = zarr.open(
-        output_zarr_path,
-        mode='w',
+    store = _init_store(output_zarr_path)
+
+    z = zarr.create(
+        store=store,
         compressor=compressor,
         filters=filters,
         chunks=chunk_shape,
         shape=data.shape,
         dtype=np.uint16,
-        synchronizer=None
+        overwrite=True
     )
 
     argslist = list(
@@ -199,11 +200,37 @@ def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compre
     return z
 
 
+def _init_store(output_path):
+    if output_path.startswith("s3://"):
+        import s3fs
+        set_credentials()
+        s3 = s3fs.S3FileSystem(anon=False, client_kwargs=dict(region_name='us-west-2'))
+        store = s3fs.S3Map(root=output_path, s3=s3, check=False)
+    else:
+        store = zarr.DirectoryStore(output_path)
+
+    return store
+
+
+def set_credentials():
+    file = "secrets/keys.csv"
+    import csv
+    try:
+        with open(file, 'r') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)  # ignore header
+            key, secret = next(reader)
+        os.environ['AWS_ACCESS_KEY_ID'] = key
+        os.environ['AWS_SECRET_ACCESS_KEY'] = secret
+    except IOError:
+        raise IOError("AWS credentials file not found.")
+
+
 def write_default(data, output_zarr_path, compressor, filters, chunk_shape, num_workers):
     blosc.use_threads = True
     blosc.set_nthreads(num_workers)
-    ds = zarr.DirectoryStore(output_zarr_path)
-    z = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=ds, overwrite=True)
+    store = _init_store(output_zarr_path)
+    z = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=store, overwrite=True)
     return z
 
 
@@ -213,7 +240,7 @@ def main():
     usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
     parser = argparse.ArgumentParser(description=usage_text)
     parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr")
-    parser.add_argument("-o", "--output-dir", type=str, default="/allen/scratch/aindtemp/cameron.arshadi")
+    parser.add_argument("-o", "--output-dir", type=str, default="s3://zarr-test-ca/test")
     parser.add_argument("-r", "--resolution", type=int, default=0)
     parser.add_argument("-s", "--random-seed", type=int, default=None)
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
@@ -239,16 +266,16 @@ def main():
     output_zarr_file4 = os.path.join(args.output_dir, "test-file4.zarr")
     output_zarr_file5 = os.path.join(args.output_dir, "test-file5.zarr")
 
-    if os.path.exists(output_zarr_file1):
-        shutil.rmtree(output_zarr_file1)
-    if os.path.exists(output_zarr_file2):
-        shutil.rmtree(output_zarr_file2)
-    if os.path.exists(output_zarr_file3):
-        shutil.rmtree(output_zarr_file3)
-    if os.path.exists(output_zarr_file4):
-        shutil.rmtree(output_zarr_file4)
-    if os.path.exists(output_zarr_file5):
-        shutil.rmtree(output_zarr_file5)
+    # if os.path.exists(output_zarr_file1):
+    #     shutil.rmtree(output_zarr_file1)
+    # if os.path.exists(output_zarr_file2):
+    #     shutil.rmtree(output_zarr_file2)
+    # if os.path.exists(output_zarr_file3):
+    #     shutil.rmtree(output_zarr_file3)
+    # if os.path.exists(output_zarr_file4):
+    #     shutil.rmtree(output_zarr_file4)
+    # if os.path.exists(output_zarr_file5):
+    #     shutil.rmtree(output_zarr_file5)
 
     logging.info(f"num cpus: {multiprocessing.cpu_count()}")
 
