@@ -206,6 +206,8 @@ def _init_store(output_path):
         set_credentials()
         s3 = s3fs.S3FileSystem(anon=False, client_kwargs=dict(region_name='us-west-2'))
         store = s3fs.S3Map(root=output_path, s3=s3, check=False)
+    elif output_path.endswith(".n5"):
+        store = zarr.N5Store(output_path)
     else:
         store = zarr.DirectoryStore(output_path)
 
