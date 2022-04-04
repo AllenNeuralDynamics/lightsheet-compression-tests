@@ -220,10 +220,10 @@ def set_credentials():
             reader = csv.reader(csvfile)
             next(reader)  # ignore header
             key, secret = next(reader)
-        os.environ['AWS_ACCESS_KEY_ID'] = key
-        os.environ['AWS_SECRET_ACCESS_KEY'] = secret
+            os.environ['AWS_ACCESS_KEY_ID'] = key
+            os.environ['AWS_SECRET_ACCESS_KEY'] = secret
     except IOError:
-        raise IOError("AWS credentials file not found.")
+        logging.warning("AWS credentials file not found. Searching default locations for credentials.")
 
 
 def write_default(data, output_zarr_path, compressor, filters, chunk_shape, num_workers):
