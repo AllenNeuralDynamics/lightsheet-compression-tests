@@ -50,11 +50,11 @@ def guess_chunk_shape(data_shape, num_workers):
     return tuple(int(c) for c in chunk_shape)
 
 
-def _worker(input_zarr_path, input_key, output_zarr_path, block):
+def _worker(input_zarr_path, input_key, output_zarr_path, block, storage_options):
     iz = zarr.open(input_zarr_path, mode='r')
     # Read relevant interval from input zarr
     data = iz["t00000" + "/" + input_key][block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
-    oz = zarr.open(output_zarr_path, mode='r+', synchronizer=None)
+    oz = zarr.open(output_zarr_path, mode='r+', storage_options=storage_options)
     oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = data
 
 
@@ -64,7 +64,7 @@ def _thread_worker(data, output_zarr_array, block):
 
 
 def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
-                       filters, client):
+                       filters, client, credentials_file=None):
     """Write a zarr array in parallel over a Dask cluster. Data reads only occur within workers to minimize
     data movement.
     args:
@@ -77,10 +77,11 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
         compressor       - the numcodecs compressor instance
         filters          - list of numcodecs filters
         client           - the Dask client instance
+        credentials_file - the file containing AWS or GCS credentials, .json for GCS, .csv for AWS
     """
     blosc.use_threads = False
 
-    store = _init_store(output_zarr_path)
+    store, storage_options = _init_storage(output_zarr_path, credentials_file)
 
     z = zarr.create(
         store=store,
@@ -92,12 +93,12 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
         overwrite=True
     )
 
-
     argslist = list(
         zip(itertools.repeat(input_zarr_path),
             itertools.repeat(input_key),
             itertools.repeat(output_zarr_path),
-            block_list)
+            block_list,
+            itertools.repeat(storage_options))
     )
     futures = []
     for args in argslist:
@@ -107,17 +108,19 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
     return z
 
 
-def write_dask(data, output_zarr_path, compressor, filters, chunk_shape, client):
+def write_dask(data, output_zarr_path, compressor, filters, chunk_shape, client, credentials_file=None):
+    # FIXME: this does not work with s3 or gcs, get permissions errors
     blosc.use_threads = False
-    store = _init_store(output_zarr_path)
+    store, storage_options = _init_storage(output_zarr_path, credentials_file)
     darray = da.from_array(data, chunks=chunk_shape)
-    delayed_result = darray.to_zarr(store, compressor=compressor, filters=filters, compute=False, overwrite=True)
+    delayed_result = darray.to_zarr(store, compressor=compressor, filters=filters, compute=False,
+                                    overwrite=True, storage_options=storage_options)
     _ = client.compute(delayed_result).result()
     return zarr.open(output_zarr_path, 'r')
 
 
 def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
-                          filters, num_workers=1):
+                          filters, num_workers=1, credentials_file=None):
     """Write a zarr array in parallel with Python multiprocessing. Data reads only occurs within workers to minimize
     data movement.
     args:
@@ -130,10 +133,11 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
         compressor       - the numcodecs compressor instance
         filters          - list of numcodecs filters
         num_workers      - number of processes to split the computation
+        credentials_file - the file containing AWS or GCS credentials, .json for GCS, .csv for AWS
     """
     blosc.use_threads = False
 
-    store = _init_store(output_zarr_path)
+    store, storage_options = _init_storage(output_zarr_path, credentials_file)
 
     z = zarr.create(
         store=store,
@@ -149,7 +153,8 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
         zip(itertools.repeat(input_zarr_path),
             itertools.repeat(input_key),
             itertools.repeat(output_zarr_path),
-            block_list)
+            block_list,
+            itertools.repeat(storage_options))
     )
 
     with multiprocessing.Pool(processes=num_workers) as pool:
@@ -158,7 +163,8 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
     return z
 
 
-def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compressor=None, filters=None, num_workers=1):
+def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compressor=None, filters=None, num_workers=1,
+                    credentials_file=None):
     """Write a zarr array in parallel with Python threading.
     args:
         data             - the input array
@@ -168,10 +174,11 @@ def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compre
         compressor       - the numcodecs compressor instance
         filters          - list of numcodecs filters
         num_workers      - number of threads to split the computation
+        credentials_file - the file containing AWS or GCS credentials, .json for GCS, .csv for AWS
     """
     blosc.use_threads = False
 
-    store = _init_store(output_zarr_path)
+    store, _ = _init_storage(output_zarr_path, credentials_file)
 
     z = zarr.create(
         store=store,
@@ -200,40 +207,46 @@ def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compre
     return z
 
 
-def _init_store(output_path):
+def write_default(data, output_zarr_path, compressor, filters, chunk_shape, num_workers, credentials_file):
+    blosc.use_threads = True
+    blosc.set_nthreads(num_workers)
+    store, _ = _init_storage(output_zarr_path, credentials_file=credentials_file)
+    z = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=store, overwrite=True)
+    return z
+
+
+def _init_storage(output_path, credentials_file=None):
+    """Credentials are required to both create the initial store from the parent process,
+    and to open the store for writing from child processes. We pass credentials parsed from credentials_file
+    in the storage_options dict to each worker."""
+    storage_options = {}
     if output_path.startswith("s3://"):
         import s3fs
-        set_credentials()
-        s3 = s3fs.S3FileSystem(anon=False, client_kwargs=dict(region_name='us-west-2'))
+        import csv
+        with open(credentials_file, 'r') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)  # ignore header
+            key, secret = next(reader)
+            storage_options['key'] = key
+            storage_options['secret'] = secret
+        s3 = s3fs.S3FileSystem(
+            anon=False,
+            key=key,
+            secret=secret,
+            client_kwargs=dict(region_name='us-west-2')
+        )
         store = s3fs.S3Map(root=output_path, s3=s3, check=False)
+    elif output_path.startswith("gs://"):
+        import gcsfs
+        storage_options['token'] = credentials_file
+        gcs = gcsfs.GCSFileSystem(project='allen-nd-goog', token=storage_options['token'], default_location='US-WEST1')
+        store = gcsfs.GCSMap(output_path, gcs=gcs, check=False)
     elif output_path.endswith(".n5"):
         store = zarr.N5Store(output_path)
     else:
         store = zarr.DirectoryStore(output_path)
 
-    return store
-
-
-def set_credentials():
-    file = "secrets/keys.csv"
-    import csv
-    try:
-        with open(file, 'r') as csvfile:
-            reader = csv.reader(csvfile)
-            next(reader)  # ignore header
-            key, secret = next(reader)
-            os.environ['AWS_ACCESS_KEY_ID'] = key
-            os.environ['AWS_SECRET_ACCESS_KEY'] = secret
-    except IOError:
-        logging.warning("AWS credentials file not found. Searching default locations for credentials.")
-
-
-def write_default(data, output_zarr_path, compressor, filters, chunk_shape, num_workers):
-    blosc.use_threads = True
-    blosc.set_nthreads(num_workers)
-    store = _init_store(output_zarr_path)
-    z = zarr.array(data, chunks=chunk_shape, filters=filters, compressor=compressor, store=store, overwrite=True)
-    return z
+    return store, storage_options
 
 
 def main():
@@ -242,7 +255,7 @@ def main():
     usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
     parser = argparse.ArgumentParser(description=usage_text)
     parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr")
-    parser.add_argument("-o", "--output-dir", type=str, default="s3://zarr-test-ca/test")
+    parser.add_argument("-o", "--output-dir", type=str, default="./results")
     parser.add_argument("-r", "--resolution", type=int, default=0)
     parser.add_argument("-s", "--random-seed", type=int, default=None)
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
@@ -254,19 +267,23 @@ def main():
     parser.add_argument("-m", "--mem", type=int, default=16)
     parser.add_argument("--chunk-shape", type=str, default=None)
     parser.add_argument("--nchunks", type=int, default=None)
+    parser.add_argument("--credentials", type=str, default=r"C:\Users\cameron.arshadi\Downloads\allen-nd-goog-2f87da2df5d0.json", help="path to AWS or GCS credentials file")
 
     args = parser.parse_args(sys.argv[1:])
+
+    credentials_file = args.credentials
 
     logging.info(args)
 
     logging.basicConfig(format='%(asctime)s %(message)s', datefmt="%Y-%m-%d %H:%M")
     logging.getLogger().setLevel(args.log_level)
 
-    output_zarr_file1 = os.path.join(args.output_dir, "test-file1.zarr")
-    output_zarr_file2 = os.path.join(args.output_dir, "test-file2.zarr")
-    output_zarr_file3 = os.path.join(args.output_dir, "test-file3.zarr")
-    output_zarr_file4 = os.path.join(args.output_dir, "test-file4.zarr")
-    output_zarr_file5 = os.path.join(args.output_dir, "test-file5.zarr")
+    # force compatible path syntax with s3 and gcs
+    output_zarr_file1 = args.output_dir + "/test-file1.zarr"
+    output_zarr_file2 = args.output_dir + "/test-file2.zarr"
+    output_zarr_file3 = args.output_dir + "/test-file3.zarr"
+    output_zarr_file4 = args.output_dir + "/test-file4.zarr"
+    output_zarr_file5 = args.output_dir + "/test-file5.zarr"
 
     # if os.path.exists(output_zarr_file1):
     #     shutil.rmtree(output_zarr_file1)
@@ -330,21 +347,22 @@ def main():
 
     start = timer()
     dask_chunked_result = write_chunked_dask(args.input_file, key, output_zarr_file1, data.shape, chunk_shape, interval_list,
-                                             compressor, filters=None, client=client)
+                                             compressor, filters=None, client=client, credentials_file=credentials_file)
     end = timer()
     logging.info(f"dask chunked write time: {end - start}, compress MiB/s {dask_chunked_result.nbytes / 2 ** 20 / (end - start)}")
 
-    start = timer()
-    dask_full_result = write_dask(data, output_zarr_file2, compressor, None, chunk_shape, client)
-    end = timer()
-    logging.info(f"dask full write time: {end - start}, compress MiB/s {dask_full_result.nbytes / 2**20 / (end-start)}")
+    # start = timer()
+    # dask_full_result = write_dask(data, output_zarr_file2, compressor, None, chunk_shape, client, credentials_file=credentials_file)
+    # end = timer()
+    # logging.info(f"dask full write time: {end - start}, compress MiB/s {dask_full_result.nbytes / 2**20 / (end-start)}")
 
     if cluster is not None:
         cluster.close()
     client.close()
 
     start = timer()
-    default_result = write_default(data, output_zarr_file3, compressor, None, chunk_shape, args.cores)
+    default_result = write_default(data, output_zarr_file3, compressor, None, chunk_shape, args.cores,
+                                   credentials_file=credentials_file)
     end = timer()
     logging.info(f"default write time: {end - start}, compress MiB/s {default_result.nbytes / 2**20 / (end-start)}")
 
@@ -352,7 +370,7 @@ def main():
         start = timer()
         multiprocessing_result = write_multiprocessing(args.input_file, key, output_zarr_file4, data.shape,
                                                        chunk_shape, interval_list, compressor, filters=None,
-                                                       num_workers=args.cores)
+                                                       num_workers=args.cores, credentials_file=credentials_file)
         end = timer()
         logging.info(f"multiprocessing write time: {end - start}, compress MiB/s "
                      f"{multiprocessing_result.nbytes / 2**20 / (end-start)}")
@@ -360,13 +378,13 @@ def main():
     if args.multithreading:
         start = timer()
         multithreading_result = write_threading(data, output_zarr_file5, chunk_shape, interval_list, compressor,
-                                                filters=None, num_workers=args.cores)
+                                                filters=None, num_workers=args.cores, credentials_file=credentials_file)
         end = timer()
         logging.info(f"threading write time: {end - start}, compress MiB/s "
                      f"{multithreading_result.nbytes / 2**20 / (end-start)}")
 
     all_equal = np.array_equal(dask_chunked_result[:], default_result[:])
-    all_equal &= np.array_equal(dask_full_result[:], default_result[:])
+    # all_equal &= np.array_equal(dask_full_result[:], default_result[:])
     if args.multiprocessing:
         all_equal &= np.array_equal(default_result[:], multiprocessing_result[:])
     if args.multithreading:
