@@ -267,7 +267,7 @@ def main():
     parser.add_argument("-m", "--mem", type=int, default=16)
     parser.add_argument("--chunk-shape", type=str, default=None)
     parser.add_argument("--nchunks", type=int, default=None)
-    parser.add_argument("--credentials", type=str, default=r"C:\Users\cameron.arshadi\Downloads\allen-nd-goog-2f87da2df5d0.json", help="path to AWS or GCS credentials file")
+    parser.add_argument("--credentials", type=str, default=None, help="path to AWS or GCS credentials file")
 
     args = parser.parse_args(sys.argv[1:])
 
