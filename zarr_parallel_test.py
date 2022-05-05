@@ -50,10 +50,10 @@ def guess_chunk_shape(data_shape, num_workers):
     return tuple(int(c) for c in chunk_shape)
 
 
-def _worker(input_zarr_path, input_key, output_zarr_path, block, storage_options):
+def _worker(input_zarr_path, output_zarr_path, block, storage_options):
     iz = zarr.open(input_zarr_path, mode='r')
     # Read relevant interval from input zarr
-    data = iz["t00000" + "/" + input_key][block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
+    data = iz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
     oz = zarr.open(output_zarr_path, mode='r+', storage_options=storage_options)
     oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = data
 
@@ -63,7 +63,8 @@ def _thread_worker(data, output_zarr_array, block):
         data[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
 
 
-def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
+
+def write_chunked_dask(input_zarr_path, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
                        filters, client, credentials_file=None):
     """Write a zarr array in parallel over a Dask cluster. Data reads only occur within workers to minimize
     data movement.
@@ -95,7 +96,6 @@ def write_chunked_dask(input_zarr_path, input_key, output_zarr_path, full_shape,
 
     argslist = list(
         zip(itertools.repeat(input_zarr_path),
-            itertools.repeat(input_key),
             itertools.repeat(output_zarr_path),
             block_list,
             itertools.repeat(storage_options))
@@ -119,7 +119,7 @@ def write_dask(data, output_zarr_path, compressor, filters, chunk_shape, client,
     return zarr.open(output_zarr_path, 'r')
 
 
-def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
+def write_multiprocessing(input_zarr_path, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
                           filters, num_workers=1, credentials_file=None):
     """Write a zarr array in parallel with Python multiprocessing. Data reads only occurs within workers to minimize
     data movement.
@@ -151,7 +151,6 @@ def write_multiprocessing(input_zarr_path, input_key, output_zarr_path, full_sha
 
     argslist = list(
         zip(itertools.repeat(input_zarr_path),
-            itertools.repeat(input_key),
             itertools.repeat(output_zarr_path),
             block_list,
             itertools.repeat(storage_options))
@@ -254,13 +253,13 @@ def main():
 
     usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
     parser = argparse.ArgumentParser(description=usage_text)
-    parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr")
-    parser.add_argument("-o", "--output-dir", type=str, default="./results")
+    parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test-file-res0-12stack.zarr")
+    parser.add_argument("-o", "--output-dir", type=str, default="/net/172.20.102.30/aind")
     parser.add_argument("-r", "--resolution", type=int, default=0)
     parser.add_argument("-s", "--random-seed", type=int, default=None)
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
-    parser.add_argument("--multiprocessing", default=True, action="store_true", help="use Python multiprocessing")
-    parser.add_argument("--multithreading", default=True, action="store_true", help="use Python multithreading")
+    parser.add_argument("--multiprocessing", default=False, action="store_true", help="use Python multiprocessing")
+    parser.add_argument("--multithreading", default=False, action="store_true", help="use Python multithreading")
     parser.add_argument("--slurm", default=False, action="store_true", help="use SLURM cluster")
     parser.add_argument("-c", "--cores", type=int, default=8)
     parser.add_argument("-p", "--processes", type=int, default=1)
@@ -317,14 +316,7 @@ def main():
     random.seed(args.random_seed)
 
     z = zarr.open(args.input_file, 'r')
-    ds = z['t00000']
-
-    resolution = args.resolution
-    tile = random.choice(list(ds.keys()))
-    key = f"{tile}/{resolution}/cells"
-    logging.info(f"loading tile {key}")
-
-    data = ds[key][()]
+    data = z
 
     # The chunk shape determines the number of blocks.
     # In my testing, roughly 1.5-2X as many blocks as workers gives good performance.
@@ -346,7 +338,7 @@ def main():
     logging.info(f"num blocks {len(interval_list)}")
 
     start = timer()
-    dask_chunked_result = write_chunked_dask(args.input_file, key, output_zarr_file1, data.shape, chunk_shape, interval_list,
+    dask_chunked_result = write_chunked_dask(args.input_file, output_zarr_file1, data.shape, chunk_shape, interval_list,
                                              compressor, filters=None, client=client, credentials_file=credentials_file)
     end = timer()
     logging.info(f"dask chunked write time: {end - start}, compress MiB/s {dask_chunked_result.nbytes / 2 ** 20 / (end - start)}")
@@ -368,7 +360,7 @@ def main():
 
     if args.multiprocessing:
         start = timer()
-        multiprocessing_result = write_multiprocessing(args.input_file, key, output_zarr_file4, data.shape,
+        multiprocessing_result = write_multiprocessing(args.input_file, output_zarr_file4, data.shape,
                                                        chunk_shape, interval_list, compressor, filters=None,
                                                        num_workers=args.cores, credentials_file=credentials_file)
         end = timer()
