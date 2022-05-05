@@ -267,6 +267,7 @@ def main():
     parser.add_argument("--chunk-shape", type=str, default=None)
     parser.add_argument("--nchunks", type=int, default=None)
     parser.add_argument("--credentials", type=str, default=None, help="path to AWS or GCS credentials file")
+    parser.add_argument("--monitor", default=False, action="store_true")
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -297,18 +298,23 @@ def main():
 
     logging.info(f"num cpus: {multiprocessing.cpu_count()}")
 
+    my_slurm_kwargs = {}
+
+    if args.monitor:
+        dashboard_address = ":8787"
+        my_slurm_kwargs['scheduler_options'] = {"dashboard_address": dashboard_address}
+
     cluster = None
     if args.slurm:
         from dask_jobqueue import SLURMCluster
-        logging.info(f"Using SLURM cluster with {args.cores} cores and {args.processes} processes")
-        # 1 process with many cores seems to work better than processes ~= cores
-        cluster = SLURMCluster(cores=args.cores, processes=args.processes, memory=f"{args.mem}GB", queue="aind")
-        # cluster.adapt(1, args.cores)
-        cluster.scale(args.cores)  # ??
+        logging.info(f"Using SLURM cluster with {args.processes} workers and {args.cores} threads per worker")
+        cluster = SLURMCluster(cores=args.cores, memory=f"{args.mem}GB", queue="aind", walltime="02:00:00", **my_slurm_kwargs)
+        cluster.scale(args.processes)
+        logging.info(cluster.job_script())
         client = Client(cluster)
     else:
         logging.info("Using local cluster")
-        client = Client(n_workers=args.processes, threads_per_worker=int(math.ceil(args.cores / args.processes)))
+        client = Client(n_workers=args.processes, threads_per_worker=args.cores)
 
     logging.info(client)
 
@@ -323,7 +329,7 @@ def main():
     # A 1:1 ratio did not work as well for some reason.
     if args.chunk_shape is None:
         if args.nchunks is None:
-            nchunks = args.cores
+            nchunks = args.processes * 2
         else:
             nchunks = args.nchunks
         chunk_shape = guess_chunk_shape(data.shape, nchunks)
