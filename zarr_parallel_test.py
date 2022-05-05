@@ -59,9 +59,41 @@ def _worker(input_zarr_path, output_zarr_path, block, storage_options):
 
 
 def _thread_worker(data, output_zarr_array, block):
-    output_zarr_array[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = \
-        data[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
+    output_zarr_array[block[0,0]:block[0,1], block[1,0]:block[1,1], block[2,0]:block[2,1]] = \
+        data[block[0,0]:block[0,1], block[1,0]:block[1,1], block[2,0]:block[2,1]]
 
+
+def _thread_reader_worker(inzarr, out_array, block):
+    out_array[block[0,0]:block[0,1], block[1,0]:block[1,1], block[2,0]:block[2,1]] = \
+        inzarr[block[0,0]:block[0,1], block[1,0]:block[1,1], block[2,0]:block[2,1]]
+
+
+def read_threading(input_zarr_path, block_shape=None, num_workers=1):
+    blosc.use_threads = False
+    
+    inzarr = zarr.open(input_zarr_path, 'r')
+    if block_shape is None:
+        block_shape = inzarr.chunks
+    blocks = make_intervals(inzarr.shape, block_shape)
+    data = np.empty(shape=inzarr.shape, dtype=inzarr.dtype)
+
+    argslist = list(
+        zip(
+            itertools.repeat(inzarr),
+            itertools.repeat(data),
+            blocks
+        )
+    )
+
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [executor.submit(_thread_reader_worker, *args) for args in argslist]
+        for future in futures:
+            try:
+                future.result()
+            except Exception as exc:
+                logging.error(exc)
+
+    return data
 
 
 def write_chunked_dask(input_zarr_path, output_zarr_path, full_shape, chunk_shape, block_list, compressor,
