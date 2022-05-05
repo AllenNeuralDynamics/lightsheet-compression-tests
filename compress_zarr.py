@@ -266,7 +266,8 @@ def compress_write(data, compressor, filters, block_multiplier, quality_metrics,
     psutil.cpu_percent(interval=None)
     start = timer()
     if use_parallel:
-        chunk_shape = zarr_parallel_test.guess_chunk_shape(data.shape, threads)
+        #chunk_shape = zarr_parallel_test.guess_chunk_shape(data.shape, threads)
+        chunk_shape = (int(math.ceil(data.shape[0] / threads)), data.shape[1], data.shape[2])
         chunk_size = estimate_size(chunk_shape, data.itemsize)
         block_list = zarr_parallel_test.make_intervals(data.shape, chunk_shape)
         za = zarr_parallel_test.write_threading(data, output_path, chunk_shape, block_list, compressor, filters, threads)
