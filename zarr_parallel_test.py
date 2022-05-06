@@ -17,45 +17,67 @@ from numcodecs import blosc
 import dask.array as da
 
 
-def make_intervals(arr_shape, chunk_shape):
+def make_blocks(arr_shape, block_shape):
     """Partition an array with shape arr_shape into chunks with shape chunk_shape.
     If arr_shape is not wholly divisible by chunk_shape,
     some chunks will have the remainder as a dimension length."""
-    assert (np.array(chunk_shape) <= np.array(arr_shape)).all()
-    chunks = []
-    for z in range(0, arr_shape[0], chunk_shape[0]):
-        zint = [z, min(z + chunk_shape[0], arr_shape[0])]
-        for y in range(0, arr_shape[1], chunk_shape[1]):
-            yint = [y, min(y + chunk_shape[1], arr_shape[1])]
-            for x in range(0, arr_shape[2], chunk_shape[2]):
-                xint = [x, min(x + chunk_shape[2], arr_shape[2])]
-                chunks.append(np.vstack([zint, yint, xint]))
-    return chunks
+    assert (np.array(block_shape) <= np.array(arr_shape)).all()
+    blocks = []
+    for z in range(0, arr_shape[0], block_shape[0]):
+        zint = [z, min(z + block_shape[0], arr_shape[0])]
+        for y in range(0, arr_shape[1], block_shape[1]):
+            yint = [y, min(y + block_shape[1], arr_shape[1])]
+            for x in range(0, arr_shape[2], block_shape[2]):
+                xint = [x, min(x + block_shape[2], arr_shape[2])]
+                blocks.append(np.vstack([zint, yint, xint]))
+    return blocks
 
 
-def guess_chunk_shape(data_shape, num_workers):
-    """Find a chunk shape that results in roughly as many chunks as worker threads.
-    Chunks are generally close to some power-of-2 fraction of each axis, slightly
-    favoring bigger values for the last index.
-    """
-    data_shape = np.array(data_shape)
-    chunk_shape = data_shape.copy()
-    ndims = len(data_shape)
-    num_chunks = 1
-    idx = 0
-    while num_chunks < num_workers:
-        chunk_shape[idx % ndims] = math.ceil(chunk_shape[idx % ndims] / 2.0)
-        idx += 1
-        num_chunks = math.ceil(np.product(data_shape / chunk_shape))
-    return tuple(int(c) for c in chunk_shape)
+def guess_blocks(data_shape, chunk_shape, num_workers, mode="z"):
+    block_shape = np.array(chunk_shape)
+    num_blocks = math.ceil(np.product(data_shape / block_shape))
+    if mode == "z":
+        while num_blocks > 2 * num_workers:
+            block_shape[0] *= 2
+            num_blocks = math.ceil(np.product(data_shape / block_shape))
+    elif mode == "cycle":
+        ndims = len(data_shape)
+        idx = 0
+        while num_blocks > 2 * num_workers:
+            block_shape[idx % ndims] *= 2
+            idx += 1
+            num_blocks = math.ceil(np.product(data_shape / block_shape))
+    else:
+        raise ValueError(f"Invalid mode {mode}")
+
+    # convert numpy int64 to Python int or zarr will complain
+    return tuple(int(d) for d in block_shape)
+
+
+def guess_chunks(data_shape, target_size, bytes_per_pixel, mode="z"):
+    chunk_shape = np.array(data_shape)
+    if mode == "z":
+        while np.product(chunk_shape) * bytes_per_pixel > target_size:
+            chunk_shape[0] = int(math.ceil(chunk_shape[0] / 2.0))
+    elif mode == "cycle":
+        ndims = len(data_shape)
+        idx = 0
+        while np.product(chunk_shape) * bytes_per_pixel > target_size:
+            chunk_shape[idx % ndims] = int(math.ceil(chunk_shape[idx % ndims] / 2.0))
+            idx += 1
+    else:
+        raise ValueError(f"Invalid mode {mode}")
+
+    # convert numpy int64 to Python int or zarr will complain
+    return tuple(int(d) for d in chunk_shape)
 
 
 def _worker(input_zarr_path, output_zarr_path, block, storage_options):
     iz = zarr.open(input_zarr_path, mode='r')
     # Read relevant interval from input zarr
-    data = iz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]]
+    data = iz[block[0,0]:block[0,1], block[1,0]:block[1,1], block[2,0]:block[2,1]]
     oz = zarr.open(output_zarr_path, mode='r+', storage_options=storage_options)
-    oz[block[0][0]:block[0][1], block[1][0]:block[1][1], block[2][0]:block[2][1]] = data
+    oz[block[0,0]:block[0,1], block[1,0]:block[1,1], block[2,0]:block[2,1]] = data
 
 
 def _thread_worker(data, output_zarr_array, block):
@@ -74,7 +96,7 @@ def read_threading(input_zarr_path, block_shape=None, num_workers=1):
     inzarr = zarr.open(input_zarr_path, 'r')
     if block_shape is None:
         block_shape = inzarr.chunks
-    blocks = make_intervals(inzarr.shape, block_shape)
+    blocks = make_blocks(inzarr.shape, block_shape)
     data = np.empty(shape=inzarr.shape, dtype=inzarr.dtype)
 
     argslist = list(
@@ -239,6 +261,7 @@ def write_threading(data, output_zarr_path, chunk_shape, block_list=None, compre
 
 
 def write_default(data, output_zarr_path, compressor, filters, chunk_shape, num_workers, credentials_file):
+    """Write a Zarr array without parallelization. Blosc compression may use multithreading."""
     blosc.use_threads = True
     blosc.set_nthreads(num_workers)
     store, _ = _init_storage(output_zarr_path, credentials_file=credentials_file)
@@ -281,25 +304,26 @@ def _init_storage(output_path, credentials_file=None):
 
 
 def main():
-    # synchronizer = zarr.sync.ProcessSynchronizer("foo.sync")
 
     usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
     parser = argparse.ArgumentParser(description=usage_text)
-    parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test-file-res0-12stack.zarr")
-    parser.add_argument("-o", "--output-dir", type=str, default="/net/172.20.102.30/aind")
-    parser.add_argument("-r", "--resolution", type=int, default=0)
-    parser.add_argument("-s", "--random-seed", type=int, default=None)
+    parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test-file-res1-12stack.zarr")
+    parser.add_argument("-o", "--output-dir", type=str, default="/allen/programs/aind/workgroups/msma/test-file.zarr")
     parser.add_argument("-l", "--log-level", type=str, default=logging.INFO)
     parser.add_argument("--multiprocessing", default=False, action="store_true", help="use Python multiprocessing")
     parser.add_argument("--multithreading", default=False, action="store_true", help="use Python multithreading")
+    parser.add_argument("--dask", default=False, action="store_true", help="use Dask")
     parser.add_argument("--slurm", default=False, action="store_true", help="use SLURM cluster")
-    parser.add_argument("-c", "--cores", type=int, default=8)
-    parser.add_argument("-p", "--processes", type=int, default=1)
-    parser.add_argument("-m", "--mem", type=int, default=16)
-    parser.add_argument("--chunk-shape", type=str, default=None)
-    parser.add_argument("--nchunks", type=int, default=None)
+    parser.add_argument("-c", "--cores-per-worker", type=int, default=1, help="number of threads per worker. Only applies for --dask and --slurm.")
+    parser.add_argument("-p", "--workers", type=int, default=4, help="number of workers. Also applies to --multithreading.")
+    parser.add_argument("-m", "--mem", type=str, default="4000M", help="memory limit per worker. Only applies for --dask and --slurm.")
+    parser.add_argument("--chunk-shape", type=str, default=None, help="zarr array chunk shape. Do not use with --chunk-size.")
+    parser.add_argument("--chunk-size", type=int, default=100E6, help="target chunk size, in bytes. Do not use with --chunk-shape.")
+    parser.add_argument("--chunk-mode", type=str, default="cycle", help="chunking mode. Options are 'z' and 'cycle'. Do not use with --chunk-shape.")
+    parser.add_argument("--block-shape", type=str, default=None, help="shape of thread fov. If None, will compute from chunk size.")
     parser.add_argument("--credentials", type=str, default=None, help="path to AWS or GCS credentials file")
-    parser.add_argument("--monitor", default=False, action="store_true")
+    parser.add_argument("--monitor", default=False, action="store_true", help="start the Dask dashboard at :8787. Only applies for --dask and --slurm")
+    parser.add_argument("--walltime", type=str, default="02:00:00", help="SLURM cluster wall time (HH:MM:SS)")
 
     args = parser.parse_args(sys.argv[1:])
 
@@ -311,22 +335,13 @@ def main():
     logging.getLogger().setLevel(args.log_level)
 
     # force compatible path syntax with s3 and gcs
+    # I'm not re-using the same file here so that we can
+    # check if the arrays are all equal later.
     output_zarr_file1 = args.output_dir + "/test-file1.zarr"
     output_zarr_file2 = args.output_dir + "/test-file2.zarr"
     output_zarr_file3 = args.output_dir + "/test-file3.zarr"
     output_zarr_file4 = args.output_dir + "/test-file4.zarr"
     output_zarr_file5 = args.output_dir + "/test-file5.zarr"
-
-    # if os.path.exists(output_zarr_file1):
-    #     shutil.rmtree(output_zarr_file1)
-    # if os.path.exists(output_zarr_file2):
-    #     shutil.rmtree(output_zarr_file2)
-    # if os.path.exists(output_zarr_file3):
-    #     shutil.rmtree(output_zarr_file3)
-    # if os.path.exists(output_zarr_file4):
-    #     shutil.rmtree(output_zarr_file4)
-    # if os.path.exists(output_zarr_file5):
-    #     shutil.rmtree(output_zarr_file5)
 
     logging.info(f"num cpus: {multiprocessing.cpu_count()}")
 
@@ -336,92 +351,92 @@ def main():
         dashboard_address = ":8787"
         my_slurm_kwargs['scheduler_options'] = {"dashboard_address": dashboard_address}
 
-    cluster = None
+    client = None
     if args.slurm:
         from dask_jobqueue import SLURMCluster
-        logging.info(f"Using SLURM cluster with {args.processes} workers and {args.cores} threads per worker")
-        cluster = SLURMCluster(cores=args.cores, memory=f"{args.mem}GB", queue="aind", walltime="02:00:00", **my_slurm_kwargs)
-        cluster.scale(args.processes)
+        logging.info(f"Using SLURM cluster with {args.workers} workers and {args.cores_per_worker} threads per worker")
+        cluster = SLURMCluster(cores=args.cores_per_worker, memory=args.mem, queue="aind", walltime=args.walltime, **my_slurm_kwargs)
+        cluster.scale(args.workers)
         logging.info(cluster.job_script())
         client = Client(cluster)
-    else:
+    elif args.dask:
         logging.info("Using local cluster")
-        client = Client(n_workers=args.processes, threads_per_worker=args.cores)
+        client = Client(n_workers=args.workers, threads_per_worker=args.cores_per_worker, memory_limit=args.mem)
 
     logging.info(client)
 
-    import random
-    random.seed(args.random_seed)
-
     z = zarr.open(args.input_file, 'r')
-    data = z
+    data = z[:]
+    logging.info(f"data shape {data.shape}, data size {data.nbytes / 2**20} MiB")
 
-    # The chunk shape determines the number of blocks.
-    # In my testing, roughly 1.5-2X as many blocks as workers gives good performance.
-    # A 1:1 ratio did not work as well for some reason.
+    # Zarr array chunk shape
     if args.chunk_shape is None:
-        if args.nchunks is None:
-            nchunks = args.processes * 2
-        else:
-            nchunks = args.nchunks
-        chunk_shape = guess_chunk_shape(data.shape, nchunks)
+        target_size = args.chunk_size
+        chunk_shape = guess_chunks(data.shape, target_size, data.itemsize, args.chunk_mode)
     else:
         chunk_shape = tuple(ast.literal_eval(args.chunk_shape))
-    logging.info(f"data shape {data.shape}")
-    logging.info(f"chunk shape {chunk_shape}")
+    logging.info(f"chunk shape {chunk_shape}, chunk_size {np.product(chunk_shape) * data.itemsize / 2**20} MiB")
+
+    # Worker region shape
+    if args.block_shape is None:
+        block_shape = guess_blocks(data.shape, chunk_shape, args.workers, args.chunk_mode)
+    else:
+        block_shape = tuple(ast.literal_eval(args.block_shape))
+    logging.info(f"block shape {block_shape}, block_size {np.product(block_shape) * data.itemsize / 2**20} MiB")
 
     compressor = blosc.Blosc(cname='zstd', clevel=1, shuffle=blosc.Blosc.SHUFFLE)
 
-    interval_list = make_intervals(data.shape, chunk_shape)
-    logging.info(f"num blocks {len(interval_list)}")
+    # Create bboxes for workers
+    block_list = make_blocks(data.shape, block_shape)
+    logging.info(f"num blocks {len(block_list)}")
 
+    # Start write tests
     start = timer()
-    dask_chunked_result = write_chunked_dask(args.input_file, output_zarr_file1, data.shape, chunk_shape, interval_list,
-                                             compressor, filters=None, client=client, credentials_file=credentials_file)
-    end = timer()
-    logging.info(f"dask chunked write time: {end - start}, compress MiB/s {dask_chunked_result.nbytes / 2 ** 20 / (end - start)}")
-
-    # start = timer()
-    # dask_full_result = write_dask(data, output_zarr_file2, compressor, None, chunk_shape, client, credentials_file=credentials_file)
-    # end = timer()
-    # logging.info(f"dask full write time: {end - start}, compress MiB/s {dask_full_result.nbytes / 2**20 / (end-start)}")
-
-    if cluster is not None:
-        cluster.close()
-    client.close()
-
-    start = timer()
-    default_result = write_default(data, output_zarr_file3, compressor, None, chunk_shape, args.cores,
+    default_result = write_default(data, output_zarr_file3, compressor, None, chunk_shape, args.workers,
                                    credentials_file=credentials_file)
     end = timer()
     logging.info(f"default write time: {end - start}, compress MiB/s {default_result.nbytes / 2**20 / (end-start)}")
 
+    if args.dask or args.slurm:
+        start = timer()
+        dask_chunked_result = write_chunked_dask(args.input_file, output_zarr_file1, data.shape, chunk_shape, block_list,
+                                                 compressor, filters=None, client=client, credentials_file=credentials_file)
+        end = timer()
+        logging.info(f"dask chunked write time: {end - start}, compress MiB/s {dask_chunked_result.nbytes / 2 ** 20 / (end - start)}")
+
+        start = timer()
+        dask_full_result = write_dask(data, output_zarr_file2, compressor, None, chunk_shape, client, credentials_file=credentials_file)
+        end = timer()
+        logging.info(f"dask full write time: {end - start}, compress MiB/s {dask_full_result.nbytes / 2**20 / (end-start)}")
+
+        client.close()
+
     if args.multiprocessing:
         start = timer()
         multiprocessing_result = write_multiprocessing(args.input_file, output_zarr_file4, data.shape,
-                                                       chunk_shape, interval_list, compressor, filters=None,
-                                                       num_workers=args.cores, credentials_file=credentials_file)
+                                                       chunk_shape, block_list, compressor, filters=None,
+                                                       num_workers=args.workers, credentials_file=credentials_file)
         end = timer()
         logging.info(f"multiprocessing write time: {end - start}, compress MiB/s "
                      f"{multiprocessing_result.nbytes / 2**20 / (end-start)}")
 
     if args.multithreading:
         start = timer()
-        multithreading_result = write_threading(data, output_zarr_file5, chunk_shape, interval_list, compressor,
-                                                filters=None, num_workers=args.cores, credentials_file=credentials_file)
+        multithreading_result = write_threading(data, output_zarr_file5, chunk_shape, block_list, compressor,
+                                                filters=None, num_workers=args.workers, credentials_file=credentials_file)
         end = timer()
         logging.info(f"threading write time: {end - start}, compress MiB/s "
                      f"{multithreading_result.nbytes / 2**20 / (end-start)}")
 
-    all_equal = np.array_equal(dask_chunked_result[:], default_result[:])
-    # all_equal &= np.array_equal(dask_full_result[:], default_result[:])
-    if args.multiprocessing:
-        all_equal &= np.array_equal(default_result[:], multiprocessing_result[:])
-    if args.multithreading:
-        all_equal &= np.array_equal(default_result[:], multithreading_result[:])
+    # all_equal = np.array_equal(dask_chunked_result[:], default_result[:])
+    # # all_equal &= np.array_equal(dask_full_result[:], default_result[:])
+    # if args.multiprocessing:
+    #     all_equal &= np.array_equal(default_result[:], multiprocessing_result[:])
+    # if args.multithreading:
+    #     all_equal &= np.array_equal(default_result[:], multithreading_result[:])
+    #logging.info(f"All equal: {all_equal}")
 
-    logging.info(f"All equal: {all_equal}")
-    logging.info(dask_chunked_result.info)
+    logging.info(default_result.info)
 
 
 if __name__ == "__main__":
