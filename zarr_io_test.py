@@ -305,7 +305,7 @@ def _init_storage(output_path, credentials_file=None):
 
 def main():
 
-    usage_text = ("Usage:" + "  zarr_parallel_test.py" + " [options]")
+    usage_text = ("Usage:" + "  zarr_io_test.py" + " [options]")
     parser = argparse.ArgumentParser(description=usage_text)
     parser.add_argument("-i", "--input-file", type=str, default="/allen/scratch/aindtemp/cameron.arshadi/test-file-res1-12stack.zarr")
     parser.add_argument("-o", "--output-dir", type=str, default="/allen/programs/aind/workgroups/msma/test-file.zarr")

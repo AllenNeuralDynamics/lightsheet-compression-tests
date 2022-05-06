@@ -15,7 +15,7 @@ import tifffile
 
 from timeit import default_timer as timer
 
-import zarr_parallel_test
+import zarr_io_test
 
 
 def trunc_filter(bits):
@@ -269,11 +269,11 @@ def compress_write(data, compressor, filters, block_multiplier, quality_metrics,
         #chunk_shape = zarr_parallel_test.guess_chunk_shape(data.shape, threads)
         chunk_shape = (int(math.ceil(data.shape[0] / threads)), data.shape[1], data.shape[2])
         chunk_size = estimate_size(chunk_shape, data.itemsize)
-        block_list = zarr_parallel_test.make_blocks(data.shape, chunk_shape)
-        za = zarr_parallel_test.write_threading(data, output_path, chunk_shape, block_list, compressor, filters, threads)
+        block_list = zarr_io_test.make_blocks(data.shape, chunk_shape)
+        za = zarr_io_test.write_threading(data, output_path, chunk_shape, block_list, compressor, filters, threads)
     else:
         chunk_shape, chunk_size = guess_chunk_shape(data, bytes_per_pixel=data.itemsize, scale_factor=block_multiplier)
-        za = zarr_parallel_test.write_default(data, output_path, compressor, filters, chunk_shape, threads)
+        za = zarr_io_test.write_default(data, output_path, compressor, filters, chunk_shape, threads)
     end = timer()
     logging.info(str(za.info))
     cpu_utilization = psutil.cpu_percent(interval=None)

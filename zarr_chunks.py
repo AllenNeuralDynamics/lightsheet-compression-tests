@@ -4,7 +4,7 @@ import numcodecs
 import tifffile
 import zarr
 from timeit import default_timer as timer
-import zarr_parallel_test
+import zarr_io_test
 import random
 import math
 import scipy.stats
@@ -77,7 +77,7 @@ if __name__ == "__main__":
         for i in range(num_trials):
             # Write the output Zarr
             start = timer()
-            zarr_parallel_test.write_threading(
+            zarr_io_test.write_threading(
                 data,
                 output_file,
                 chunks,
@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
             # Read the output Zarr
             start = timer()
-            zarr_parallel_test.read_threading(output_file, blocks, threads)
+            zarr_io_test.read_threading(output_file, blocks, threads)
             end = timer()
             read_time = end-start
             chunks_metrics['read_time'] = read_time

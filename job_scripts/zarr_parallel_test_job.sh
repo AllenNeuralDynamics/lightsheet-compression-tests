@@ -15,6 +15,6 @@ source /allen/scratch/aindtemp/cameron.arshadi/venvs/dask-env/bin/activate
 
 echo "Running zarr_parallel_test.py"
  
-python3 /home/cameron.arshadi/repos/lightsheet-compression-tests/zarr_parallel_test.py -i /allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr -o /allen/scratch/aindtemp/cameron.arshadi/ --slurm --multiprocessing -c 32 -p 1 -m 16 -s 42 -r 0
+python3 /home/cameron.arshadi/repos/lightsheet-compression-tests/zarr_io_test.py -i /allen/scratch/aindtemp/data/anatomy/exm-hemi-brain.zarr -o /allen/scratch/aindtemp/cameron.arshadi/ --slurm --multiprocessing -c 32 -p 1 -m 16 -s 42 -r 0
  
 date
