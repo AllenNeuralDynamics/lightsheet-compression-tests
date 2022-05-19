@@ -71,24 +71,21 @@ def imfilter(im, filter, sigma, voxel_size, num_threads, ij_wrapper):
         pix_sigmas = np.tile([sigma], 3) / voxel_size
         ij_wrapper.ij.op().filter().gauss(java_out, java_in, pix_sigmas.tolist())
         return ij_wrapper.ij.py.from_java(java_out)
-    elif filter == 'dog':
-        # Convert numpy array to Java RandomAccessibleInterval
-        # This automatically swaps axes from ZYX -> XYZ
-        java_in = ij_wrapper.ij.py.to_java(im)
-        java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
-        java_in_float = ij_wrapper.ij.op().convert().float32(ij_wrapper.ij.op().transform().flatIterableView(java_in))
-        sigmas1 = np.tile([sigma / 1.6], 3) / voxel_size
-        sigmas2 = np.tile([sigma], 3) / voxel_size
-        ij_wrapper.ij.op().filter().dog(java_out, java_in_float, sigmas1.tolist(), sigmas2.tolist())
-        return ij_wrapper.ij.py.from_java(java_out)
+    # elif filter == 'dog':
+    #     # Convert numpy array to Java RandomAccessibleInterval
+    #     # This automatically swaps axes from ZYX -> XYZ
+    #     java_in = ij_wrapper.ij.py.to_java(im)
+    #     java_out = ij_wrapper.ij.op().run("create.img", java_in, ij_wrapper.floattype_cls())
+    #     java_in_float = ij_wrapper.ij.op().convert().float32(ij_wrapper.ij.op().transform().flatIterableView(java_in))
+    #     sigmas1 = np.tile([sigma / 1.6], 3) / voxel_size
+    #     sigmas2 = np.tile([sigma], 3) / voxel_size
+    #     ij_wrapper.ij.op().filter().dog(java_out, java_in_float, sigmas1.tolist(), sigmas2.tolist())
+    #     return ij_wrapper.ij.py.from_java(java_out)
     elif filter == "log":
         px_sigma = np.tile([sigma], 3) / voxel_size
         return ndi.gaussian_laplace(im, px_sigma)
     else:
         raise ValueError("Unknown filter: " + filter)
-
-    # Back to numpy and ZYX order
-
 
 
 def compare_seg(true_seg, test_seg, metrics):
